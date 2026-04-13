@@ -1,0 +1,27 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Logs and temp files
+*.log
+dev_rfc.log
+scratch/
+
+# IDE files
+.vscode/
+.idea/
