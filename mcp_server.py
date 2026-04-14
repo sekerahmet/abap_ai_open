@@ -271,6 +271,37 @@ def check_objects_in_tadir(names: list[str]) -> dict:
     return _ddic_reader().check_objects_batch([n.upper() for n in names])
 
 
+@mcp.tool()
+def fetch_table_data(table_name: str, where_clause: str = "", max_rows: int = 200) -> str:
+    """
+    Fetch actual data rows from an SAP table (not just field definitions).
+    Always fetches live from SAP — table data is not cached in the workspace.
+    where_clause: optional WHERE condition (e.g. "BUKRS = '1000' AND GJAHR = '2024'")
+    max_rows: maximum rows to return (default 200)
+    """
+    name = table_name.upper()
+    columns, rows = _ddic_reader().fetch_table_data(name, where_clause, max_rows)
+    if columns is None:
+        return f"ERROR: {rows}"
+    if not rows:
+        msg = f"Table '{name}': no rows found"
+        return msg + (f" for WHERE: {where_clause}" if where_clause else "")
+
+    col_widths = [max(len(c), max((len(str(r[i])) for r in rows), default=0))
+                  for i, c in enumerate(columns)]
+    header = "  ".join(c.ljust(col_widths[i]) for i, c in enumerate(columns))
+    separator = "  ".join("-" * w for w in col_widths)
+    data_lines = ["  ".join(str(r[i]).ljust(col_widths[i]) for i in range(len(columns)))
+                  for r in rows]
+
+    result = f"Table: {name}  ({len(rows)} rows)\n"
+    if where_clause:
+        result += f"WHERE: {where_clause}\n"
+    result += separator + "\n" + header + "\n" + separator + "\n"
+    result += "\n".join(data_lines)
+    return result
+
+
 # ── Workspace tools ──────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -303,7 +334,7 @@ def read_workspace_file(profile: str, folder: str, filename: str, project: str =
     """
     Read a file from the local workspace saved by the ABAP AI IDE.
     Use list_workspace_files to discover available files.
-    folder: PROG, CLAS, FUNC, or TABL
+    folder: "programs" for source files, "proposals" for AI proposals
     filename: e.g. ZFI_001_UFRS_01.abap or ZTABLE.json
     project: (optional) The project/program folder name.
     """

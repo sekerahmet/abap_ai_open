@@ -31,6 +31,7 @@ class ABAPParser:
             r"(?i)\bTABLES\s*:?\s*(\w+)",                        # TABLES: TABLENAME
             r"(?i)\bTYPE\s+(\w+)-\w+",                           # TYPE struct-field  → captures struct
             r"(?i)\bLIKE\s+(\w+)-\w+",                           # LIKE struct-field  → captures struct
+            r"(?i)\bLIKE\s+(\w+)(?!-)",                          # LIKE tablename (OCCURS/WITH...)  → captures table
             r"(?i)\bFROM\s+(\w+)\b",                              # SELECT/DELETE FROM tablename
             r"(?i)\bTABLE\s+OF\s+(\w+)\b",                       # ... TABLE OF typename
             r"(?i)\bINTO\s+(?:TABLE\s+)?@?\w+\s+TYPE\s+(\w+)",   # INTO ... TYPE typename
