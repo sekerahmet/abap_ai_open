@@ -290,8 +290,8 @@ class App(ctk.CTk):
         self.after(0, self.write_log, f"[DISCOVERY] {len(global_registry)} SAP objects verified.")
         self.after(0, self.populate_tree, combined, global_registry)
 
-        # Auto-save Z*/Y* table field definitions to workspace
-        if profile:
+        # Auto-save Z*/Y* table field definitions under the main program's project folder
+        if profile and self.current_main_program:
             saved_any = False
             for name, ttype in global_registry.items():
                 if ttype not in ("TABL", "VIEW"):
@@ -303,7 +303,8 @@ class App(ctk.CTk):
                 try:
                     _, attrs = self.controller.fetch_ddic_object(conn, name)
                     if attrs and isinstance(attrs, dict):
-                        saved = workspace.save_table(profile, name, attrs.get("FIELDS", []), project=name)
+                        saved = workspace.save_table(profile, name, attrs.get("FIELDS", []),
+                                                     project=self.current_main_program)
                         if saved:
                             self.after(0, self.write_log, f"[WS] Saved table: {name}")
                             saved_any = True
@@ -388,10 +389,11 @@ class App(ctk.CTk):
             if code:
                 self.after(0, self.write_log, f"SUCCESS: {name} loaded.")
                 if category == "DICT":
-                    # Tables/structures → own project folder
+                    # Save under main program's project folder if known, else own folder
+                    proj = self.current_main_program if self.current_main_program else name
                     self.after(0, self.open_ddic_tab, dname, attrs, "Table")
                     saved = workspace.save_table(profile, name, attrs.get("FIELDS", []),
-                                                 project=name)
+                                                 project=proj)
                 else:
                     # Includes/programs → save under the active main program's folder
                     proj = self.current_main_program if self.current_main_program else name
@@ -728,7 +730,8 @@ class App(ctk.CTk):
 
     # Maps workspace subfolder name → (display label, ftype string)
     _WS_FOLDER_META = {
-        "programs": ("📝  Programs",  "Program"),
+        "programs":  ("📝  Programs",  "Program"),
+        "tables":    ("📊  Tables",    "Table"),
         "proposals": ("📬  Proposals", "Program"),
     }
 
@@ -755,7 +758,7 @@ class App(ctk.CTk):
                 proj_node = tree.insert(p_node, "end",
                                         text=f"📂  {proj_name}", open=True)
                 subfolders = projects[proj_name]
-                for folder in ("programs", "proposals"):
+                for folder in ("programs", "tables", "proposals"):
                     fnames = subfolders.get(folder, [])
                     if not fnames:
                         continue
