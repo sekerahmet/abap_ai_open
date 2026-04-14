@@ -15,7 +15,6 @@ __pycache__/
 # Build artifacts
 dist/
 build/
-*.spec
 
 # Logs and temp files
 *.log
