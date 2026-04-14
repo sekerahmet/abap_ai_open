@@ -19,7 +19,7 @@ class EditorPanel(ctk.CTkFrame):
         self.fetch_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         self.fetch_bar.grid_columnconfigure(1, weight=1)
 
-        self.type_menu = ctk.CTkOptionMenu(self.fetch_bar, values=["Program", "Table", "Structure", "Function Module", "Global Class", "Function Group"], width=130, height=40)
+        self.type_menu = ctk.CTkOptionMenu(self.fetch_bar, values=["Program", "Table", "Structure", "Function Module", "Global Class", "Function Group", "Table Data"], width=130, height=40)
         self.type_menu.grid(row=0, column=0, padx=10)
         self.app.fetch_type_var = self.type_menu._variable # Link to app context
 

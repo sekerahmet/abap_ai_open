@@ -22,6 +22,10 @@ class AnalysisController:
         if not self.sap_mgr: self.initialize_sap(conn_params)
         return self.ddic_reader.fetch_table(name)
 
+    def fetch_table_data(self, conn_params, name, where_clause="", max_rows=200):
+        if not self.sap_mgr: self.initialize_sap(conn_params)
+        return self.ddic_reader.fetch_table_data(name, where_clause, max_rows)
+
     def check_objects_batch(self, conn_params, names):
         if not self.sap_mgr: self.initialize_sap(conn_params)
         return self.ddic_reader.check_objects_batch(names)

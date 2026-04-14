@@ -71,11 +71,11 @@ def push_workspace(profile: str, commit_msg: str = "") -> tuple:
         # Update remote URL (token may have changed)
         _run(["git", "remote", "set-url", "origin", auth_url], ws_dir)
 
-    # Stage all Z/Y project folders, exclude prop/ inside each (proposals are transient)
-    # New structure: ws_dir/{ZPROGRAM}/programs/ and {ZPROGRAM}/prop/
-    # We add everything then unstage prop/ subfolders
+    # Stage all Z/Y project folders, exclude proposals/ inside each (proposals are transient)
+    # Structure: ws_dir/{ZPROGRAM}/programs/ and {ZPROGRAM}/proposals/
+    # We add everything then unstage proposals/ subfolders
     _run(["git", "add", "."], ws_dir)
-    _run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "*/prop/"], ws_dir)
+    _run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "*/proposals/"], ws_dir)
 
     # Check if there's anything to commit
     status_out, _, _ = _run(["git", "status", "--porcelain"], ws_dir)

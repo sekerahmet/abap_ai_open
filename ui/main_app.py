@@ -160,13 +160,21 @@ class App(ctk.CTk):
     def fetch_program_flow(self):
         program = self.editor.name_entry.get().strip()
         if not program: return
+        ftype = self.editor.type_menu.get()
+        where_clause = ""
+        if ftype == "Table Data":
+            where_clause = askstring(
+                "WHERE Clause",
+                f"Enter WHERE clause for {program}\n(leave empty for all rows, max {200}):",
+                initialvalue=""
+            ) or ""
         self.write_log(f"Fetching {program}...")
         self.fetch_btn.configure(state="disabled", text="Working...")
         conn = self.get_current_conn()
-        ftype = self.editor.type_menu.get()
-        threading.Thread(target=self.run_fetch, args=(conn, program, ftype), daemon=True).start()
+        threading.Thread(target=self.run_fetch, args=(conn, program, ftype),
+                         kwargs={"where_clause": where_clause}, daemon=True).start()
 
-    def run_fetch(self, conn, prog, ftype, force=False):
+    def run_fetch(self, conn, prog, ftype, force=False, where_clause=""):
         try:
             profile = self.sidebar.system_var.get()
 
@@ -195,6 +203,16 @@ class App(ctk.CTk):
             printable_conn = {k: (v if k != "passwd" else "********") for k, v in conn.items()}
             self.after(0, self.write_log, f"[DIAG] RFC Params: {printable_conn}")
             self.after(0, self.write_log, f"[RFC] Initiating Dial to {conn.get('ashost')}...")
+
+            if ftype == "Table Data":
+                columns, rows = self.controller.fetch_table_data(conn, prog, where_clause)
+                if columns is None:
+                    self.after(0, self.write_log, f"FAILED: {prog} - {rows}")
+                else:
+                    tab_name = f"Data: {prog}" + (f" [{where_clause[:30]}]" if where_clause else "")
+                    self.after(0, self.write_log, f"SUCCESS: {prog} — {len(rows)} rows.")
+                    self.after(0, self.open_data_tab, tab_name, columns, rows)
+                return
 
             if ftype == "Table" or ftype == "Structure":
                 code, attrs = self.controller.fetch_ddic_object(conn, prog)
@@ -271,6 +289,28 @@ class App(ctk.CTk):
         global_registry = self.controller.check_objects_batch(conn, all_names)
         self.after(0, self.write_log, f"[DISCOVERY] {len(global_registry)} SAP objects verified.")
         self.after(0, self.populate_tree, combined, global_registry)
+
+        # Auto-save Z*/Y* table field definitions to workspace
+        if profile:
+            saved_any = False
+            for name, ttype in global_registry.items():
+                if ttype not in ("TABL", "VIEW"):
+                    continue
+                if not name.upper().startswith(("Z", "Y")):
+                    continue
+                if workspace.read_table_fields(profile, name):
+                    continue  # already cached
+                try:
+                    _, attrs = self.controller.fetch_ddic_object(conn, name)
+                    if attrs and isinstance(attrs, dict):
+                        saved = workspace.save_table(profile, name, attrs.get("FIELDS", []), project=name)
+                        if saved:
+                            self.after(0, self.write_log, f"[WS] Saved table: {name}")
+                            saved_any = True
+                except Exception as e:
+                    self.after(0, self.write_log, f"[WS] Skip table {name}: {e}")
+            if saved_any:
+                self.after(0, self.refresh_workspace_tree)
 
     def populate_tree(self, objs_dict, registry):
         # Clear tree
@@ -540,6 +580,56 @@ class App(ctk.CTk):
 
         self.editor.set_active(name)
 
+    def open_data_tab(self, name, columns, rows):
+        """Display table data rows in a scrollable grid tab."""
+        if name in self.editor.tabs_dict:
+            self.editor.set_active(name)
+            return
+        content = self.editor.add_tab(name)
+        content.grid_rowconfigure(1, weight=1)
+        content.grid_columnconfigure(0, weight=1)
+
+        hdr = ctk.CTkFrame(content, height=32, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 2))
+        table_name = name.split(": ", 1)[-1].split(" [")[0]
+        ctk.CTkLabel(hdr, text=f"{table_name}  —  {len(rows)} rows  ×  {len(columns)} columns",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+
+        tree_frame = ctk.CTkFrame(content, fg_color="#1a1a1b")
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(2, 10))
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        style = ttk.Style()
+        style.configure("Data.Treeview",
+                        background="#1a1a1b", foreground="#d4d4d4",
+                        fieldbackground="#1a1a1b", rowheight=24,
+                        font=("Consolas", 12))
+        style.configure("Data.Treeview.Heading",
+                        background="#2a2a2a", foreground="#569cd6",
+                        font=("Consolas", 12, "bold"), relief="flat")
+        style.map("Data.Treeview", background=[("selected", "#264f78")])
+
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", style="Data.Treeview")
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=120, minwidth=60, stretch=False)
+
+        tree.tag_configure("odd",  background="#1a1a1b")
+        tree.tag_configure("even", background="#212123")
+
+        sb_y = ttk.Scrollbar(tree_frame, orient="vertical",   command=tree.yview)
+        sb_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        sb_y.grid(row=0, column=1, sticky="ns")
+        sb_x.grid(row=1, column=0, sticky="ew")
+
+        for i, row in enumerate(rows):
+            tree.insert("", "end", values=row, tags=("even" if i % 2 == 0 else "odd",))
+
+        self.editor.set_active(name)
+
     def open_diff_tab(self, name, original_code, proposed_code):
         """Show a unified diff of original vs proposed code with green/red line highlighting."""
         if name in self.editor.tabs_dict:
@@ -639,7 +729,7 @@ class App(ctk.CTk):
     # Maps workspace subfolder name → (display label, ftype string)
     _WS_FOLDER_META = {
         "programs": ("📝  Programs",  "Program"),
-        "prop":     ("📬  Proposals", "Program"),
+        "proposals": ("📬  Proposals", "Program"),
     }
 
     def refresh_workspace_tree(self):
@@ -665,7 +755,7 @@ class App(ctk.CTk):
                 proj_node = tree.insert(p_node, "end",
                                         text=f"📂  {proj_name}", open=True)
                 subfolders = projects[proj_name]
-                for folder in ("programs", "prop"):
+                for folder in ("programs", "proposals"):
                     fnames = subfolders.get(folder, [])
                     if not fnames:
                         continue
@@ -691,7 +781,7 @@ class App(ctk.CTk):
         profile, folder, filename, project = vals[0], vals[1], vals[2], vals[3]
         prog = os.path.splitext(filename)[0]   # e.g. ZPROGRAM
 
-        if folder == "prop":
+        if folder == "proposals":
             code = workspace.read_file(profile, folder, filename, project=project)
             if code:
                 self.open_code_tab(f"Proposal: {prog}", code, None, prog,
@@ -725,7 +815,7 @@ class App(ctk.CTk):
                 if key not in self._watched_proposals:
                     self._watched_proposals.add(key)
                     name = os.path.splitext(fname)[0]
-                    proposed = workspace.read_file(profile, "prop", fname, project=project)
+                    proposed = workspace.read_file(profile, "proposals", fname, project=project)
 
                     # Find original: tabs_dict first (any tab prefix), then workspace
                     original = ""

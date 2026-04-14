@@ -6,7 +6,7 @@ Folder layout:
     └── {profile}/
         └── {program_name}/   ← Z*/Y* object name (uppercase)
             ├── programs/     ← source files (.abap) + table defs (.json)
-            └── prop/         ← AI proposals (.abap)
+            └── proposals/    ← AI proposals (.abap)
 
 Only custom objects (Z* / Y* prefix) are saved.
 Standard SAP objects are fetched for display but not written to disk.
@@ -20,9 +20,9 @@ _WORKSPACE_ROOT = os.path.join(
     "ABAP_AI", "workspace"
 )
 
-# All source types go into programs/, proposals into prop/
+# All source types go into programs/, proposals into proposals/
 _SOURCE_FOLDER = "programs"
-_PROP_FOLDER   = "prop"
+_PROP_FOLDER   = "proposals"
 
 
 def _is_custom(name: str) -> bool:
@@ -78,7 +78,7 @@ def save_table(profile: str, name: str, fields: list,
 
 def write_proposal(profile: str, name: str, code: str,
                    project: str = None) -> str:
-    """Write an AI proposal to the project's prop/ folder."""
+    """Write an AI proposal to the project's proposals/ folder."""
     proj = (project or name).upper()
     path = get_path(profile, "PROP", name, proj)
     _ensure(path)
@@ -142,7 +142,7 @@ def read_table_fields(profile: str, name: str,
 def list_files(profile: str) -> dict:
     """
     Return workspace contents as:
-        { prog_name: { "programs": [filenames], "prop": [filenames] } }
+        { prog_name: { "programs": [filenames], "proposals": [filenames] } }
     """
     base = os.path.join(_WORKSPACE_ROOT, profile)
     if not os.path.exists(base):
