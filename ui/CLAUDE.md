@@ -62,6 +62,8 @@ All three check `self.editor.tabs_dict` first — if already open, call `set_act
 - `open_code_tab` renders a "Re-fetch from SAP" button in the tab toolbar when `prog` and `ftype` are provided.
 - `open_ddic_tab` renders the same button in the header row.
 - Both call `refetch_object(tab_name, prog, ftype)` which closes the tab and starts `run_fetch(..., force=True)`.
+- For `ftype="Program"`: also passes `force_sub=True` → `run_proactive_check(force=True)` →
+  all Z*/Y* tables are re-fetched from SAP (cache skipped). Full program + includes + tables refresh in one click.
 
 ### Key flow: fetch (workspace-first)
 ```
@@ -70,13 +72,16 @@ fetch_program_flow()              ← triggered by Fetch button
       ├── workspace cache hit?
       │     YES → open_code_tab / open_ddic_tab (no RFC)
       │     NO  → controller.fetch_*() via RFC
-      │           → save to workspace ({prog}/programs/)
+      │           → save to workspace ({prog}/programs/ or tables/)
       │           → open tab
       │           → refresh_workspace_tree()
-      └── if Program: threading.Thread(run_proactive_check)
-               → fetch each include (workspace-first), save under main program's project
+      └── if Program: threading.Thread(run_proactive_check, force=force_sub)
+               → fetch each include from SAP, save under {PROG}/programs/
                → check_objects_batch against TADIR
                → populate_tree()
+               → for each Z*/Y* TABL/VIEW in registry (not yet cached, or force=True):
+                   fetch DDIF_FIELDINFO_GET → save to {PROG}/tables/{ZTABLE}.json
+               → refresh_workspace_tree() if any table saved
 ```
 
 ### Key flow: SAP upload
@@ -107,7 +112,7 @@ send_chat()
 
 ### Proposal file watcher
 `_poll_proposals()` runs every 2000 ms via `self.after(2000, _poll_proposals)`.
-For each new file in `workspace/{profile}/{project}/prop/`:
+For each new file in `workspace/{profile}/{project}/proposals/`:
 - If original code exists in `self.tabs_dict` → `open_diff_tab`
 - Otherwise → `open_code_tab` as proposal tab
 
@@ -120,11 +125,12 @@ Watched key format: `"profile/project/filename"` — stored in `_watched_proposa
 | `on_workspace_select(event)` | Double-click handler on `ws_tree`. Opens file from workspace (no RFC). |
 
 `_WS_FOLDER_META` maps subfolder names to `(display_label, ftype_string)`:
-- `"programs"` → `("📝  Programs", "Program")`
-- `"prop"` → `("📬  Proposals", "Program")`
+- `"programs"`  → `("📝  Programs",  "Program")`
+- `"tables"`    → `("📊  Tables",    "Table")`
+- `"proposals"` → `("📬  Proposals", "Program")`
 
 Tree node values stored as `(profile, folder, filename, project)`.
-`.json` files in `programs/` open as DDIC tabs; `.abap` in `prop/` open as Proposal tabs.
+`.json` files in `tables/` open as DDIC tabs; `.abap` in `proposals/` open as Proposal tabs.
 
 ### GitHub sync
 ```
