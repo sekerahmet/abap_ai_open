@@ -5,7 +5,8 @@ Folder layout:
     workspace/
     └── {profile}/
         └── {program_name}/   ← Z*/Y* object name (uppercase)
-            ├── programs/     ← source files (.abap) + table defs (.json)
+            ├── programs/     ← source files (.abap)
+            ├── tables/       ← table/structure field definitions (.json)
             └── proposals/    ← AI proposals (.abap)
 
 Only custom objects (Z* / Y* prefix) are saved.
@@ -20,8 +21,8 @@ _WORKSPACE_ROOT = os.path.join(
     "ABAP_AI", "workspace"
 )
 
-# All source types go into programs/, proposals into proposals/
 _SOURCE_FOLDER = "programs"
+_TABLE_FOLDER  = "tables"
 _PROP_FOLDER   = "proposals"
 
 
@@ -44,9 +45,14 @@ def get_path(profile: str, ftype: str, name: str, project: str = None) -> str:
     Return the filesystem path for an object.
     project defaults to the object name itself (each Z* object is its own project).
     """
-    proj   = (project or name).upper()
-    folder = _PROP_FOLDER if ftype == "PROP" else _SOURCE_FOLDER
-    ext    = _ext(ftype)
+    proj = (project or name).upper()
+    if ftype == "PROP":
+        folder = _PROP_FOLDER
+    elif ftype in ("TABL", "VIEW", "Table", "Structure"):
+        folder = _TABLE_FOLDER
+    else:
+        folder = _SOURCE_FOLDER
+    ext = _ext(ftype)
     return os.path.join(_WORKSPACE_ROOT, profile, proj, folder, f"{name.upper()}{ext}")
 
 
@@ -128,7 +134,7 @@ def read_code(profile: str, ftype: str, name: str,
 def read_table_fields(profile: str, name: str,
                       project: str = None) -> list:
     """Load saved table field definitions. Returns [] if not found."""
-    content = read_file(profile, _SOURCE_FOLDER, f"{name.upper()}.json", project)
+    content = read_file(profile, _TABLE_FOLDER, f"{name.upper()}.json", project)
     if not content:
         return []
     try:
@@ -157,7 +163,7 @@ def list_files(profile: str) -> dict:
             continue   # skip non-Z/Y folders
 
         entry = {}
-        for sub in (_SOURCE_FOLDER, _PROP_FOLDER):
+        for sub in (_SOURCE_FOLDER, _TABLE_FOLDER, _PROP_FOLDER):
             sub_path = os.path.join(proj_path, sub)
             if os.path.isdir(sub_path):
                 files = sorted(os.listdir(sub_path))
