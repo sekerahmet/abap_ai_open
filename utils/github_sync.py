@@ -44,83 +44,87 @@ def _authenticated_url(repo_url: str, token: str) -> str:
 def push_workspace(profile: str, commit_msg: str = "") -> tuple:
     """
     Push workspace files for a profile to GitHub.
-    Returns (True, info_message) or (False, error_message).
+    Restructures the push so that the profile appears as a folder in the repo.
     """
     token = os.getenv("GITHUB_TOKEN", "")
     repo  = os.getenv("GITHUB_REPO",  "")
 
     if not token or not repo:
-        return False, "GITHUB_TOKEN and GITHUB_REPO must be set in .env"
+        return False, "GITHUB_TOKEN ve GITHUB_REPO .env içerisinde tanımlanmış olmalı."
 
-    ws_dir = os.path.join(_WORKSPACE_ROOT, profile)
-    if not os.path.isdir(ws_dir):
-        return False, f"Workspace folder not found: {ws_dir}"
+    # Use _WORKSPACE_ROOT as the git base, not the profile folder
+    base_dir = _WORKSPACE_ROOT
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir, exist_ok=True)
 
     auth_url = _authenticated_url(repo, token)
     msg = commit_msg or f"ABAP AI: sync {profile}"
 
-    # Init repo if needed
-    if not os.path.isdir(os.path.join(ws_dir, ".git")):
-        _, err, rc = _run(["git", "init"], ws_dir)
+    # Init repo at root if needed
+    if not os.path.isdir(os.path.join(base_dir, ".git")):
+        _, err, rc = _run(["git", "init"], base_dir)
         if rc != 0:
             return False, f"git init failed: {err}"
-        _, err, rc = _run(["git", "remote", "add", "origin", auth_url], ws_dir)
+        _, err, rc = _run(["git", "remote", "add", "origin", auth_url], base_dir)
         if rc != 0:
             return False, f"git remote add failed: {err}"
     else:
-        # Update remote URL (token may have changed)
-        _run(["git", "remote", "set-url", "origin", auth_url], ws_dir)
+        _run(["git", "remote", "set-url", "origin", auth_url], base_dir)
 
-    # Stage all Z/Y project folders, exclude proposals/ inside each (proposals are transient)
-    # Structure: ws_dir/{ZPROGRAM}/programs/ and {ZPROGRAM}/proposals/
-    # We add everything then unstage proposals/ subfolders
-    _run(["git", "add", "."], ws_dir)
-    _run(["git", "rm", "-r", "--cached", "--ignore-unmatch", "*/proposals/"], ws_dir)
+    # Ensure a .gitignore exists at root to skip proposals
+    gitignore_path = os.path.join(base_dir, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, "w") as f:
+            f.write("**/proposals/\n")
+
+    # Add ONLY the current profile folder
+    _, err, rc = _run(["git", "add", profile], base_dir)
+    if rc != 0:
+        return False, f"git add failed: {err}"
 
     # Check if there's anything to commit
-    status_out, _, _ = _run(["git", "status", "--porcelain"], ws_dir)
+    status_out, _, _ = _run(["git", "status", "--porcelain", profile], base_dir)
     if not status_out:
-        return True, "Nothing to commit — workspace already up to date."
+        return True, "Değişiklik yok — Workspace zaten güncel."
 
-    _, err, rc = _run(["git", "commit", "-m", msg], ws_dir)
+    _, err, rc = _run(["git", "commit", "-m", msg], base_dir)
     if rc != 0:
         return False, f"git commit failed: {err}"
 
-    out, err, rc = _run(["git", "push", "--set-upstream", "origin", "main",
-                          "--force-with-lease"], ws_dir)
+    # Force push to establish the new structure or overwrite remote
+    out, err, rc = _run(["git", "push", "-u", "origin", "HEAD:main", "--force"], base_dir)
     if rc != 0:
-        # Try creating the branch on first push
-        out, err, rc = _run(["git", "push", "-u", "origin", "HEAD:main"], ws_dir)
-        if rc != 0:
-            return False, f"git push failed: {err}"
+        return False, f"git push failed: {err}"
 
-    return True, f"Pushed to GitHub: {repo}\n{out}"
+    return True, f"GitHub'a gönderildi: {repo}\n{out}"
 
 
 def pull_workspace(profile: str) -> tuple:
     """
-    Pull latest changes from GitHub into the workspace profile folder.
-    Returns (True, info_message) or (False, error_message).
+    Pull latest changes from GitHub into the unified workspace root.
     """
     token = os.getenv("GITHUB_TOKEN", "")
     repo  = os.getenv("GITHUB_REPO",  "")
 
     if not token or not repo:
-        return False, "GITHUB_TOKEN and GITHUB_REPO must be set in .env"
+        return False, "GITHUB_TOKEN ve GITHUB_REPO .env içerisinde tanımlanmış olmalı."
 
-    ws_dir = os.path.join(_WORKSPACE_ROOT, profile)
-    os.makedirs(ws_dir, exist_ok=True)
-
+    base_dir = _WORKSPACE_ROOT
+    os.makedirs(base_dir, exist_ok=True)
     auth_url = _authenticated_url(repo, token)
 
-    if not os.path.isdir(os.path.join(ws_dir, ".git")):
-        out, err, rc = _run(["git", "clone", auth_url, "."], ws_dir)
-        if rc != 0:
-            return False, f"git clone failed: {err}"
-        return True, f"Cloned from GitHub: {repo}"
-
-    _run(["git", "remote", "set-url", "origin", auth_url], ws_dir)
-    out, err, rc = _run(["git", "pull", "--rebase", "origin", "main"], ws_dir)
+    if not os.path.isdir(os.path.join(base_dir, ".git")):
+        # Clone into a temp folder or init and pull
+        _, err, rc = _run(["git", "init"], base_dir)
+        if rc != 0: return False, f"git init failed: {err}"
+        _run(["git", "remote", "add", "origin", auth_url], base_dir)
+    
+    _run(["git", "remote", "set-url", "origin", auth_url], base_dir)
+    
+    # Fetch and reset/pull
+    _run(["git", "fetch", "origin"], base_dir)
+    out, err, rc = _run(["git", "pull", "origin", "main"], base_dir)
     if rc != 0:
         return False, f"git pull failed: {err}"
-    return True, f"Pulled from GitHub.\n{out}"
+    
+    return True, f"GitHub'dan güncellemeler çekildi.\n{out}"
