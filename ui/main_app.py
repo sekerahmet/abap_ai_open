@@ -558,16 +558,24 @@ class App(ctk.CTk):
                         font=("Consolas", 12, "bold"), relief="flat")
         style.map("DDIC.Treeview", background=[("selected", "#264f78")])
 
-        cols = ("field", "type", "len", "description")
+        cols = ("key", "field", "type", "len", "decimals", "dataelement", "domain", "description")
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", style="DDIC.Treeview")
+        tree.heading("key",         text="Key")
         tree.heading("field",       text="Field Name")
         tree.heading("type",        text="Type")
-        tree.heading("len",         text="Length")
+        tree.heading("len",         text="Len")
+        tree.heading("decimals",    text="Dec")
+        tree.heading("dataelement", text="Data Element")
+        tree.heading("domain",      text="Domain")
         tree.heading("description", text="Description")
+        tree.column("key",         width=35,  minwidth=35,  anchor="center")
         tree.column("field",       width=180, minwidth=100)
-        tree.column("type",        width=80,  minwidth=60)
-        tree.column("len",         width=70,  minwidth=50, anchor="center")
-        tree.column("description", width=500, minwidth=200)
+        tree.column("type",        width=70,  minwidth=50)
+        tree.column("len",         width=55,  minwidth=40,  anchor="center")
+        tree.column("decimals",    width=45,  minwidth=40,  anchor="center")
+        tree.column("dataelement", width=160, minwidth=100)
+        tree.column("domain",      width=140, minwidth=80)
+        tree.column("description", width=340, minwidth=150)
 
         tree.tag_configure("odd",  background="#1a1a1b")
         tree.tag_configure("even", background="#212123")
@@ -581,8 +589,10 @@ class App(ctk.CTk):
 
         for i, f in enumerate(fields):
             tree.insert("", "end", tags=("even" if i % 2 == 0 else "odd",),
-                        values=(f.get("Field", ""), f.get("Type", ""),
-                                f.get("Len", ""), f.get("Description", "")))
+                        values=(f.get("Key", ""), f.get("Field", ""), f.get("Type", ""),
+                                f.get("Len", ""), f.get("Decimals", ""),
+                                f.get("DataElement", ""), f.get("Domain", ""),
+                                f.get("Description", "")))
 
         self.editor.set_active(name)
 

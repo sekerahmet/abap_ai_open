@@ -163,13 +163,16 @@ def switch_profile(profile_name: str) -> str:
 def _fmt_table(name: str, fields: list) -> str:
     """Format table field list as readable text (shared by workspace and SAP paths)."""
     header = f"Table: {name}  ({len(fields)} fields)\n"
-    separator = "-" * 80 + "\n"
+    separator = "-" * 100 + "\n"
+    col_hdr = (f"{'K':<2}  {'Field':<30}  {'Type':<10}  {'Len':<6}  "
+               f"{'Dec':<4}  {'Data Element':<25}  {'Domain':<25}  Description\n")
     rows = "\n".join(
-        f"{f.get('Field', ''):<30}  {f.get('Type', ''):<10}  "
-        f"{str(f.get('Len', '')):<6}  {f.get('Description', '')}"
+        f"{f.get('Key', ''):<2}  {f.get('Field', ''):<30}  {f.get('Type', ''):<10}  "
+        f"{str(f.get('Len', '')):<6}  {str(f.get('Decimals', '')):<4}  "
+        f"{f.get('DataElement', ''):<25}  {f.get('Domain', ''):<25}  {f.get('Description', '')}"
         for f in fields
     )
-    return header + separator + rows
+    return header + separator + col_hdr + separator + rows
 
 
 @mcp.tool()
