@@ -6,19 +6,25 @@ class DDICReader:
 
     def fetch_table(self, name):
         try:
-            # DDIF_FIELDINFO_GET for metadata
             res = self.mgr.execute("DDIF_FIELDINFO_GET", TABNAME=name.upper())
             fields = []
             for f in res.get("DFIES_TAB", []):
                 fields.append({
-                    "Field": f.get("FIELDNAME"),
-                    "Type": f.get("DATATYPE"),
-                    "Len": f.get("LENG"),
-                    "Description": f.get("FIELDTEXT")
+                    "Field":       f.get("FIELDNAME", ""),
+                    "Key":         "K" if f.get("KEYFLAG") else "",
+                    "Type":        f.get("DATATYPE", ""),
+                    "Len":         f.get("LENG", ""),
+                    "Decimals":    f.get("DECIMALS", ""),
+                    "DataElement": f.get("ROLLNAME", ""),
+                    "Domain":      f.get("DOMNAME", ""),
+                    "Description": f.get("FIELDTEXT", ""),
                 })
-            
+
             # Compact code representation (used as AI context)
-            code = f"* Table: {name}\n" + "\n".join([f"DATA {f['Field']} TYPE {f['Type']}." for f in fields])
+            code = f"* Table: {name}\n" + "\n".join(
+                f"DATA {f['Field']} TYPE {f['Type']}."
+                for f in fields
+            )
             return code, {"NAME": name, "TYPE": "TABLE", "FIELDS": fields}
         except Exception as e:
             return None, str(e)
