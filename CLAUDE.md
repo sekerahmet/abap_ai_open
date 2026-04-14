@@ -81,6 +81,8 @@ Diff tabs open via `open_diff_tab(name, original_code, proposed_code)` with gree
 - `force=False` (default): check `utils/workspace` first; skip RFC if found
 - `force=True`: always hit SAP, overwrite workspace cache
 - Re-fetch button in each code/DDIC tab calls `refetch_object(tab_name, prog, ftype)`
+- For `ftype="Program"`, Re-fetch also passes `force_sub=True` to `run_proactive_check`,
+  forcing all discovered Z*/Y* tables to be re-fetched from SAP (not just re-used from cache)
 
 ### .env path (PyInstaller safe)
 All modules that load `.env` use a `_find_dotenv()` helper:
@@ -105,8 +107,9 @@ from threading callbacks without circular imports.
 | What | Where |
 |---|---|
 | Connection profiles | `%APPDATA%\ABAP_AI\systems.json` |
-| Workspace (Z*/Y* code) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\programs\` |
-| AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\prop\` |
+| Workspace (Z*/Y* source code) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\programs\` |
+| Workspace (Z*/Y* table fields) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\tables\` |
+| AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\proposals\` |
 | API key | `.env` → `GEMINI_API_KEY` |
 | GitHub token | `.env` → `GITHUB_TOKEN`, `GITHUB_REPO` |
 

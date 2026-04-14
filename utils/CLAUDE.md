@@ -47,6 +47,9 @@ dictionary objects (e.g. STRING, CHAR, TABLE, END, MESSAGE, VALUE, SELECTION, et
 `run_proactive_check` fetches each include found by the parser, runs `get_objects` on it,
 and merges results. Final dict/class/include names are checked against TADIR via
 `check_objects_batch`. Only TADIR-verified objects appear in the SAP Object Explorer.
+After the TADIR check, any Z*/Y* tables (`TABL`/`VIEW`) not yet cached are automatically
+fetched via `DDIF_FIELDINFO_GET` and saved to `{main_program}/tables/{ZTABLE}.json`.
+Pass `force=True` to bypass the cache check and re-fetch all tables from SAP.
 
 ---
 
@@ -58,38 +61,40 @@ All paths live under `%APPDATA%\ABAP_AI\workspace\` — never under `dist/`.
 ### Folder layout
 ```
 %APPDATA%\ABAP_AI\workspace\
-└── {profile}/                  ← SAP system profile name (e.g. finpro_ides)
-    └── {PROG_NAME}/            ← Z*/Y* object name (e.g. ZFINPRO_REPORT)
-        ├── programs/           ← source files: .abap (code) + .json (table fields)
-        └── prop/               ← AI proposals: .abap
+└── {profile}/                  ← SAP system profile name (e.g. HCS_DEV)
+    └── {PROG_NAME}/            ← Z*/Y* object name (e.g. ZFI_CO_001)
+        ├── programs/           ← source files: .abap (programs, includes, classes, FMs)
+        ├── tables/             ← table/structure field definitions: .json
+        └── proposals/          ← AI proposals: .abap
 ```
 
 Only Z*/Y* objects are saved. Standard SAP objects are fetched for display but never written to disk.
-Each Z/Y object is its own project folder. Includes belonging to a program are saved under the
-main program's project folder (via `project=` parameter).
+Includes and discovered Z*/Y* tables are saved under the **main program's** project folder
+(via `project=` parameter). Directly fetched tables get their own project folder.
 
 ### Public API
 
 | Function | Signature | Purpose |
 |---|---|---|
 | `save_code` | `(profile, ftype, name, code, project=None)` | Save ABAP source; `""` if standard object |
-| `save_table` | `(profile, name, fields, project=None)` | Save field list as JSON |
+| `save_table` | `(profile, name, fields, project=None)` | Save field list as JSON to `tables/` |
 | `read_code` | `(profile, ftype, name, project=None)` | Load ABAP source; `""` if not found |
-| `read_table_fields` | `(profile, name, project=None)` | Load JSON field list; `[]` if not found |
+| `read_table_fields` | `(profile, name, project=None)` | Load JSON field list from `tables/`; `[]` if not found |
 | `read_file` | `(profile, folder, filename, project=None)` | Raw read by subfolder + filename |
-| `write_proposal` | `(profile, name, code, project=None)` | Write to `prop/`; IDE polls and opens diff tab |
-| `list_files` | `(profile)` | `{PROG_NAME: {"programs": [...], "prop": [...]}}` |
+| `write_proposal` | `(profile, name, code, project=None)` | Write to `proposals/`; IDE polls and opens diff tab |
+| `list_files` | `(profile)` | `{PROG_NAME: {"programs": [...], "tables": [...], "proposals": [...]}}` |
 | `list_profiles` | `()` | Profile names with existing workspace folders |
-| `scan_proposals` | `(profile)` | `[(project, filename), ...]` from all `prop/` dirs |
+| `scan_proposals` | `(profile)` | `[(project, filename), ...]` from all `proposals/` dirs |
 | `get_path` | `(profile, ftype, name, project=None)` | Resolve full filesystem path |
 
 ### Subfolder mapping
-All source types (PROG, CLAS, FUNC, TABL, VIEW, etc.) → `programs/`
-Proposals (PROP) → `prop/`
+Source types (PROG, CLAS, FUNC, and all non-table/non-proposal types) → `programs/`
+Table/structure types (TABL, VIEW, Table, Structure) → `tables/`
+Proposals (PROP) → `proposals/`
 
 ### project= parameter
 - When `project=None`: uses the object name itself as the project folder
-- When `project="ZMAIN"`: saves under `ZMAIN/programs/` (used for includes belonging to a main program)
+- When `project="ZMAIN"`: saves under `ZMAIN/{subfolder}/` (used for objects belonging to a main program)
 - `read_file` without project: searches all project folders (stem-first, then iterate)
 
 ### Workspace-first pattern
@@ -114,11 +119,11 @@ GITHUB_REPO=https://github.com/username/abap-workspace
 ### Public API
 | Function | Returns | Notes |
 |---|---|---|
-| `push_workspace(profile, commit_msg="")` | `(True, info)` or `(False, error)` | Excludes `*/prop/` (proposals are transient) |
+| `push_workspace(profile, commit_msg="")` | `(True, info)` or `(False, error)` | Excludes `*/proposals/` (proposals are transient) |
 | `pull_workspace(profile)` | `(True, info)` or `(False, error)` | git clone on first run, git pull thereafter |
 
 ### Token injection
 `https://github.com/...` → `https://{token}@github.com/...` (never stored in git config)
 
 ### Push staging strategy
-`git add .` then `git rm --cached */prop/` — stages all programs/ files, unstages all proposals.
+`git add .` then `git rm --cached */proposals/` — stages `programs/` and `tables/` files, unstages proposals.

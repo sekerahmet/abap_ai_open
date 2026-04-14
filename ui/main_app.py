@@ -174,7 +174,7 @@ class App(ctk.CTk):
         threading.Thread(target=self.run_fetch, args=(conn, program, ftype),
                          kwargs={"where_clause": where_clause}, daemon=True).start()
 
-    def run_fetch(self, conn, prog, ftype, force=False, where_clause=""):
+    def run_fetch(self, conn, prog, ftype, force=False, where_clause="", force_sub=False):
         try:
             profile = self.sidebar.system_var.get()
 
@@ -240,13 +240,14 @@ class App(ctk.CTk):
                     self.after(0, self.refresh_workspace_tree)
                 if ftype == "Program":
                     objs = ABAPParser.get_objects(code)
-                    threading.Thread(target=self.run_proactive_check, args=(conn, objs, profile), daemon=True).start()
+                    threading.Thread(target=self.run_proactive_check, args=(conn, objs, profile),
+                                     kwargs={"force": force_sub}, daemon=True).start()
         except Exception as e:
             self.after(0, self.write_log, f"CONNECTION ERROR: {str(e)}")
         finally:
             self.after(0, self.reset_buttons)
 
-    def run_proactive_check(self, conn, main_objs, profile=""):
+    def run_proactive_check(self, conn, main_objs, profile="", force=False):
         """Deep discovery: parse main program + all includes to find all referenced SAP objects."""
         # Merge helper
         def _merge(combined, seen, new_objs):
@@ -298,7 +299,7 @@ class App(ctk.CTk):
                     continue
                 if not name.upper().startswith(("Z", "Y")):
                     continue
-                if workspace.read_table_fields(profile, name):
+                if not force and workspace.read_table_fields(profile, name):
                     continue  # already cached
                 try:
                     _, attrs = self.controller.fetch_ddic_object(conn, name)
@@ -510,13 +511,16 @@ class App(ctk.CTk):
         self.editor.set_active(name)
 
     def refetch_object(self, tab_name, prog, ftype):
-        """Close the current tab and force a live RFC fetch, overwriting workspace."""
+        """Close the current tab and force a live RFC fetch, overwriting workspace.
+        For Program type: also force-refetches all discovered tables and includes."""
         self.editor.close_tab(tab_name)
         self.write_log(f"[Re-fetch] Fetching {prog} from SAP...")
         if hasattr(self, "fetch_btn"):
             self.fetch_btn.configure(state="disabled", text="Working...")
         conn = self.get_current_conn()
-        threading.Thread(target=self.run_fetch, args=(conn, prog, ftype, True), daemon=True).start()
+        force_sub = (ftype == "Program")
+        threading.Thread(target=self.run_fetch, args=(conn, prog, ftype, True),
+                         kwargs={"force_sub": force_sub}, daemon=True).start()
 
     def open_ddic_tab(self, name, attrs, ftype="Table"):
         if name in self.editor.tabs_dict:
