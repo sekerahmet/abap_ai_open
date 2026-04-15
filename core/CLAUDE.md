@@ -7,7 +7,7 @@ All public methods return `(result, error_or_attrs)` tuples so callers can check
 ---
 
 ## controller.py — AnalysisController
-Single facade used by `ui/main_app.py`. Lazily initializes SAP and AI on first use.
+Single facade used by `ui/main_app.py`. Lazily initializes SAP on first use.
 
 ```
 fetch_program(conn_params, name)         → (code, attrs)   uses ProgramReader
@@ -19,9 +19,6 @@ list_transports(conn_params, user="")    → [{"TRKORR", "AS4USER", "AS4TEXT"}, 
 check_syntax(conn_params, prog, source)  → (True, warnings) | (False, errors) | (None, "")
 upload_program(conn_params, prog, source, trkorr, skip_tr_assign=False)
                                          → (True, "") | (False, error_msg)
-initialize_ai(gemini_key)               → GeminiClient instance
-send_chat(message)                      → str response
-run_analysis(code, attrs, mode)         → str response
 ```
 
 **Important:** `initialize_sap(conn_params)` is called automatically on first fetch if not yet done.
@@ -106,20 +103,7 @@ obj_type = wa[40:].strip()
 
 ---
 
-## ai/gemini_client.py — GeminiClient
-
-- Model: `gemini-2.0-flash-preview`
-- Stateful: `chat_session` created once via `_ensure_chat()`, reused for the lifetime of the app
-- System instruction injected at session creation (FETCH/PROPOSAL protocol + ABAP expert role)
-- `send_message(text)` → plain string (handles exceptions, returns error string)
-- `run_analysis(code, attrs, mode)` → builds prompt from `Config.get_prompt(mode, ...)` then calls `send_message`
-
-## ai/base.py — AbstractAIClient
-ABC with `__init__`, `send_message`, `run_analysis`. Implement this to add a new AI backend (e.g. Claude API).
-
 ## config.py — Config
-- Prompt templates keyed by mode: `"review"`, `"performance"`, `"security"`, `"documentation"`
-- `Config.get_prompt(mode, code, attrs)` prepends attrs block when attrs provided
 - SAP_CONNECTION dict reads from `.env` (used as fallback; UI overrides via connection profiles)
 - Uses `_find_dotenv()` helper — safe for both dev and PyInstaller frozen exe
 

@@ -99,6 +99,43 @@ def push_workspace(profile: str, commit_msg: str = "") -> tuple:
     return True, f"GitHub'a gönderildi: {repo}\n{out}"
 
 
+def get_git_status() -> dict:
+    """
+    Run `git status --porcelain -u` in the workspace root.
+    Returns { relative_path: status } where status is:
+      'M'  modified (staged or unstaged)
+      '?'  untracked / new
+      'D'  deleted
+    Returns {} if no .git repo exists yet.
+    """
+    if not os.path.isdir(os.path.join(_WORKSPACE_ROOT, ".git")):
+        return {}
+    out, _, rc = _run(["git", "status", "--porcelain", "-u"], _WORKSPACE_ROOT)
+    if rc != 0:
+        return {}
+    result = {}
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        xy   = line[:2]
+        path = line[3:].strip().strip('"').replace("\\", "/")
+        if "?" in xy:
+            result[path] = "?"
+        elif "D" in xy:
+            result[path] = "D"
+        else:
+            result[path] = "M"
+    return result
+
+
+def get_branch_name() -> str:
+    """Return the current git branch name, or '' if no .git repo."""
+    if not os.path.isdir(os.path.join(_WORKSPACE_ROOT, ".git")):
+        return ""
+    out, _, rc = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], _WORKSPACE_ROOT)
+    return out if rc == 0 else ""
+
+
 def pull_workspace(profile: str) -> tuple:
     """
     Pull latest changes from GitHub into the unified workspace root.

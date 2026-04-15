@@ -121,9 +121,16 @@ GITHUB_REPO=https://github.com/username/abap-workspace
 |---|---|---|
 | `push_workspace(profile, commit_msg="")` | `(True, info)` or `(False, error)` | Excludes `*/proposals/` (proposals are transient) |
 | `pull_workspace(profile)` | `(True, info)` or `(False, error)` | git clone on first run, git pull thereafter |
+| `get_git_status()` | `{rel_path: "M"\|"?"\|"D"}` | Parses `git status --porcelain -u`; returns `{}` if no `.git` repo |
+| `get_branch_name()` | `str` or `""` | `git rev-parse --abbrev-ref HEAD`; returns `""` if no `.git` repo |
 
 ### Token injection
 `https://github.com/...` → `https://{token}@github.com/...` (never stored in git config)
 
 ### Push staging strategy
-`git add .` then `git rm --cached */proposals/` — stages `programs/` and `tables/` files, unstages proposals.
+Stages only the current profile folder (`git add {profile}`). A root-level `.gitignore` excludes `**/proposals/`.
+
+### git status codes
+- `"M"` — modified (staged or unstaged)
+- `"?"` — untracked / new file
+- `"D"` — deleted

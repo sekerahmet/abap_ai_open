@@ -2,19 +2,17 @@
 
 ## Layout (3-column grid in App window)
 ```
-col 0 (minsize=320)   col 1 (weight=1)      col 2 (minsize=380)
+col 0 (minsize=270)   col 1 (weight=1)      col 2 (minsize=420)
 ┌─────────────────┐   ┌──────────────────┐   ┌─────────────────┐
-│  SidebarPanel   │   │   EditorPanel    │   │   ChatPanel     │
+│  SidebarPanel   │   │   EditorPanel    │   │  ExplorerPanel  │
 │                 │   │                  │   │                 │
-│ · Connection    │   │ · Fetch bar      │   │ · Chat log      │
-│   profiles      │   │ · Tab bar        │   │ · Input + Send  │
-│ · GitHub        │   │ · Content area   │   │                 │
-│   Push / Pull   │   │   (tabs)         │   │                 │
-│ · SAP Objects   │   │                  │   │                 │
-│   Explorer      │   │                  │   │                 │
-│ · Workspace     │   │                  │   │                 │
-│   Explorer      │   │                  │   │                 │
-└─────────────────┘   └──────────────────┘   └─────────────────┘
+│ · Connection    │   │ · Fetch bar      │   │ · SAP Objects   │
+│   profiles      │   │ · Tab bar        │   │   tab (tree)    │
+│   (scroll)      │   │ · Content area   │   │ · Workspace     │
+│                 │   │   (tabs)         │   │   tab (tree)    │
+└─────────────────┘   └──────────────────┘   │   + Push/Pull   │
+                                              │   + 🌿 branch   │
+                                              └─────────────────┘
 ```
 
 ---
@@ -34,18 +32,15 @@ Central glue class. Owns:
 app.fetch_btn       set by EditorPanel
 app.fetch_type_var  set by EditorPanel (OptionMenu variable)
 app.prog_name       set by EditorPanel (name Entry)
-app.send_btn        set by ChatPanel
-app.chat_input      set by ChatPanel
-app.chat_log        set by ChatPanel
 app.sap_ashost      set by SidebarPanel
 app.sap_sysnr       set by SidebarPanel
 app.sap_client      set by SidebarPanel
 app.sap_user        set by SidebarPanel
 app.sap_passwd      set by SidebarPanel
 app.sap_router      set by SidebarPanel
-app.tree            set by SidebarPanel  (SAP Object Explorer Treeview)
-app.tree_roots      set by SidebarPanel  (dict: category → treeview iid)
-app.ws_tree         set by SidebarPanel  (Workspace Explorer Treeview)
+app.tree            set by ExplorerPanel  (SAP Object Explorer Treeview)
+app.tree_roots      set by ExplorerPanel  (dict: category → treeview iid)
+app.ws_tree         set by ExplorerPanel  (Workspace Explorer Treeview)
 ```
 
 ### Tab opening methods
@@ -100,16 +95,6 @@ open_transport_dialog(prog, ftype, get_code_fn, source_profile)
             └── write_program() → candidates 1-5
 ```
 
-### Key flow: AI chat
-```
-send_chat()
-  → threading.Thread(run_ai)
-    → controller.send_chat(prompt)
-    → after(0, chat.on_chat_response, res)
-      → detects [[FETCH:...]] tags → triggers run_sub_fetch threads (workspace-first)
-      → detects [[PROPOSAL:...]] → calls open_suggestion_tab
-```
-
 ### Proposal file watcher
 `_poll_proposals()` runs every 2000 ms via `self.after(2000, _poll_proposals)`.
 For each new file in `workspace/{profile}/{project}/proposals/`:
@@ -121,7 +106,7 @@ Watched key format: `"profile/project/filename"` — stored in `_watched_proposa
 ### Workspace Explorer methods
 | Method | Description |
 |---|---|
-| `refresh_workspace_tree()` | Reloads `ws_tree` Treeview from disk. Called on startup, after every workspace save, and by proposal poller. |
+| `refresh_workspace_tree()` | Reloads `ws_tree` Treeview from disk + git status. Called on startup, after every workspace save, proposal poll, and after Push/Pull. |
 | `on_workspace_select(event)` | Double-click handler on `ws_tree`. Opens file from workspace (no RFC). |
 
 `_WS_FOLDER_META` maps subfolder names to `(display_label, ftype_string)`:
@@ -129,15 +114,31 @@ Watched key format: `"profile/project/filename"` — stored in `_watched_proposa
 - `"tables"`    → `("📊  Tables",    "Table")`
 - `"proposals"` → `("📬  Proposals", "Program")`
 
-Tree node values stored as `(profile, folder, filename, project)`.
+Tree node values stored as 5-tuple: `(kind, profile, folder, filename, project)`.
+- `kind` — display string from `_WS_FOLDER_META` (visible "Kind" column)
+- `_p`, `_fo`, `_fn`, `_proj` — hidden metadata columns read by `on_workspace_select`
+
 `.json` files in `tables/` open as DDIC tabs; `.abap` in `proposals/` open as Proposal tabs.
+
+### Git status in Workspace tree
+`refresh_workspace_tree()` calls `github_sync.get_git_status()` to annotate nodes with color tags and icon prefixes:
+
+| Status | Tag | Color | Prefix |
+|---|---|---|---|
+| Modified | `ws_modified` | `#e5c07b` amber | `● ` |
+| Untracked/New | `ws_new` | `#98c379` green | `+ ` |
+| Deleted | `ws_deleted` | `#e06c75` red | `✗ ` |
+
+Status is aggregated upward: file → folder-node → project-node → profile-node (priority: M > ? > D).
 
 ### GitHub sync
 ```
 github_push() → thread → github_sync.push_workspace(profile)
+                → on success: refresh_workspace_tree() + explorer_panel.update_branch_label()
 github_pull() → thread → github_sync.pull_workspace(profile)
+                → on success: explorer_panel.update_branch_label()
 ```
-Buttons are always visible in sidebar row 1 (not inside the scrollable settings frame).
+Push/Pull buttons live in the ExplorerPanel Workspace tab toolbar (not the sidebar).
 
 ### Connection params
 `get_current_conn()` reads the sidebar Entry widgets and maps `router` → `saprouter`
@@ -147,15 +148,11 @@ Buttons are always visible in sidebar row 1 (not inside the scrollable settings 
 
 ## panels/sidebar.py — SidebarPanel
 
-Grid rows:
-- **Row 0** (`weight=0`): scrollable connection settings (profile dropdown + 6 Entry fields + Save button)
-- **Row 1** (`weight=0`): GitHub Push / Pull buttons — always visible, never inside scroll frame
-- **Row 2** (`weight=1`): `CTkTabview` with two tabs:
-  - **"SAP Objects"**: `ttk.Treeview` with root nodes DICT / CLASS / INCLUDES / FIELDS
-  - **"Workspace"**: `ttk.Treeview` showing `profile → program → subfolder → filename` + Refresh button
+Single grid row:
+- **Row 0** (`weight=0`): scrollable connection settings (profile dropdown + New/Del buttons + 6 Entry fields + Save Profile button)
 
-`app.tree` and `app.tree_roots` point to the SAP Objects tree.
-`app.ws_tree` points to the Workspace tree.
+`app.sap_*` entry references are set here via `setattr(self.app, "sap_"+attr, entry)`.
+No explorer trees, no GitHub buttons — those are in `ExplorerPanel`.
 
 ---
 
@@ -176,11 +173,24 @@ Custom tab system (not CTkTabview — built manually for closable tabs).
 
 ---
 
-## panels/chat_panel.py — ChatPanel
+## panels/explorer_panel.py — ExplorerPanel
 
-`on_chat_response(text)` handles two AI protocol tags:
-- `[[FETCH:Category:Name]]` → fires `run_sub_fetch` threads (autonomous fetch, workspace-first)
-- `[[PROPOSAL:FileName]]...[[END_PROPOSAL]]` → calls `open_suggestion_tab`
+Two-tab panel occupying col 2 (right column).
 
-`send_btn` starts disabled, re-enabled in `on_chat_response` (or `reset_buttons`).
-Chat input bound to `<Return>` key.
+### SAP Objects tab
+`ttk.Treeview` with Name + Type columns.
+Root nodes created at startup and assigned to `app.tree_roots`:
+- `app.tree_roots["DICT"]` — 📦 Dictionary
+- `app.tree_roots["CLASS"]` — 💠 Classes
+- `app.tree_roots["INCLUDES"]` — 📎 Includes
+- `app.tree_roots["FIELDS"]` — 🔗 Local Refs
+
+`app.tree` = the Treeview widget. Bind `<<TreeviewSelect>>` fires `app.on_tree_select`.
+
+### Workspace tab
+Toolbar (row 0): `[⬆ Push]` `[⬇ Pull]` `[⟳]` spacer `🌿 <branch>`
+Tree (row 1): `app.ws_tree` — columns `("kind","_p","_fo","_fn","_proj")`, displaycolumns `("kind",)`.
+
+`update_branch_label()` — reads branch name from `github_sync.get_branch_name()` and updates the toolbar label. Called at startup (`after(600, ...)`) and after Push/Pull completes.
+
+Double-click on ws_tree fires `app.on_workspace_select`.

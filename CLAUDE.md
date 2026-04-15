@@ -2,7 +2,7 @@
 
 ## What This Is
 A desktop IDE built with Python + CustomTkinter that connects to SAP systems via RFC (pyrfc),
-fetches ABAP source code, parses referenced objects, and sends code to Gemini AI for review/chat.
+fetches ABAP source code, parses referenced objects, and displays a git-aware workspace explorer.
 Also exposes an MCP server so Claude Desktop can read/write the same objects via RFC + local workspace.
 Packaged as a single Windows .exe with PyInstaller.
 
@@ -12,16 +12,16 @@ Packaged as a single Windows .exe with PyInstaller.
 
 ```
 ui/          ← CustomTkinter GUI  (never touch SAP/AI directly)
-core/        ← Business logic     (SAP readers, AI client, controller)
-utils/       ← Stateless helpers  (parser, highlighter, workspace)
+core/        ← Business logic     (SAP readers, controller)
+utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync)
 ```
 
 ### Layer responsibilities
 | Layer | Allowed to | Must NOT |
 |---|---|---|
 | `ui/` | call `app.controller.*`, update widgets | import pyrfc, call AI directly |
-| `core/` | RFC calls, AI calls, pure logic | import tkinter |
-| `utils/` | regex, text manipulation, filesystem | import tkinter, pyrfc |
+| `core/` | RFC calls, pure logic | import tkinter |
+| `utils/` | regex, text manipulation, filesystem | import tkinter, pyrfc, `core.*` |
 
 ---
 
@@ -33,28 +33,26 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace)
 | `main.spec` | PyInstaller spec (`console=True` for dev, `False` for release) |
 | `mcp_server.py` | FastMCP server — exposes SAP RFC + workspace tools to Claude Desktop |
 | `ui/main_app.py` | `App(ctk.CTk)` — glue class; owns threading, tab routing, log |
-| `ui/panels/sidebar.py` | `SidebarPanel` — connection fields + GitHub buttons + SAP/Workspace explorers |
+| `ui/panels/sidebar.py` | `SidebarPanel` — connection profiles only (profile dropdown + 6 Entry fields + Save button) |
 | `ui/panels/editor.py` | `EditorPanel` — custom tab bar + content area |
-| `ui/panels/chat_panel.py` | `ChatPanel` — chat log, input, `on_chat_response()` AI parsing |
-| `core/controller.py` | `AnalysisController` — single facade for all SAP + AI operations |
+| `ui/panels/explorer_panel.py` | `ExplorerPanel` — git-aware right column: SAP Objects + Workspace tabs, Push/Pull/Refresh toolbar, branch label |
+| `core/controller.py` | `AnalysisController` — single facade for all SAP operations |
 | `core/sap/connection.py` | `SAPConnectionManager` — singleton, always fresh connect (no ping) |
 | `core/sap/program_reader.py` | `ProgramReader` — RPY_PROGRAM_READ, RPY_FUNCTIONMODULE_READ, class includes |
 | `core/sap/program_writer.py` | `ProgramWriter` — transport list, TR assign, syntax check, write (5 candidates) |
 | `core/sap/ddic_reader.py` | `DDICReader` — DDIF_FIELDINFO_GET, TADIR batch check |
-| `core/ai/gemini_client.py` | `GeminiClient` — stateful chat session, model `gemini-2.0-flash-preview` |
-| `core/ai/base.py` | `AbstractAIClient` — ABC for future AI backends |
-| `core/config.py` | `Config` — prompt templates, env var defaults |
+| `core/config.py` | `Config` — env var defaults |
 | `utils/highlighter.py` | `ABAPHighlighter` — regex tag-based syntax coloring for CTkTextbox |
 | `utils/parser.py` | `ABAPParser` — extracts DICT/CLASS/INCLUDES/FIELDS/events from ABAP source |
 | `utils/workspace.py` | `workspace` — filesystem bridge; saves/reads Z*/Y* objects in AppData |
-| `utils/github_sync.py` | `github_sync` — push/pull workspace to GitHub via subprocess git |
+| `utils/github_sync.py` | `github_sync` — push/pull workspace to GitHub via subprocess git; git status + branch query |
 
 ---
 
 ## Key Patterns
 
 ### Threading rule (critical)
-All SAP/AI calls run in `daemon=True` threads. GUI updates **must** use `self.after(0, fn, args)`.
+All SAP RFC calls run in `daemon=True` threads. GUI updates **must** use `self.after(0, fn, args)`.
 Never call tkinter widgets from a background thread directly — includes `messagebox` dialogs.
 
 ```python
@@ -96,7 +94,7 @@ load_dotenv(_find_dotenv())
 After building, copy `.env` next to `dist/main.exe` — it is NOT bundled (contains secrets).
 
 ### App context wiring
-`SidebarPanel`, `EditorPanel`, `ChatPanel` each receive `app_context` (the `App` instance).
+`SidebarPanel`, `EditorPanel`, `ExplorerPanel` each receive `app_context` (the `App` instance).
 They set widget references on `app` (e.g. `self.app.fetch_btn = ...`) so `App` can call them
 from threading callbacks without circular imports.
 
@@ -110,7 +108,6 @@ from threading callbacks without circular imports.
 | Workspace (Z*/Y* source code) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\programs\` |
 | Workspace (Z*/Y* table fields) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\tables\` |
 | AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\proposals\` |
-| API key | `.env` → `GEMINI_API_KEY` |
 | GitHub token | `.env` → `GITHUB_TOKEN`, `GITHUB_REPO` |
 
 All paths use `%APPDATA%` — survive `pyinstaller --clean`, uninstall, and `dist/` deletion.
@@ -192,14 +189,6 @@ Different from TADIR OBJECT field:
 | `FUGR` | Function Group |
 | `FUNC` | Function Module |
 | `MSAG` | Message Class |
-
----
-
-## AI Protocol (Gemini)
-- Stateful chat session (`client.chats.create(...)`) — persists across messages in one app session
-- AI can request autonomous fetches: `[[FETCH:Category:Name]]` → parsed in `ChatPanel.on_chat_response`
-- AI wraps code proposals: `[[PROPOSAL:FileName]]...[[END_PROPOSAL]]` → opens a new code tab
-- System instruction is set once at session creation in `GeminiClient.__init__`
 
 ---
 
