@@ -881,6 +881,7 @@ class App(ctk.CTk):
             return
         tree.selection_set(item)
 
+        # Capture vals NOW — tree may be rebuilt by _poll_proposals before menu action fires
         vals = tree.item(item, "values")
         if not vals or len(vals) < 5:
             return
@@ -894,7 +895,7 @@ class App(ctk.CTk):
         # "Open" only for actual file nodes
         if not kind.startswith("_"):
             menu.add_command(label="  Open",
-                             command=lambda i=item: self._ws_open_item(i))
+                             command=lambda v=vals: self._ws_open_vals(v))
             menu.add_separator()
 
         # Delete label varies by node type
@@ -905,24 +906,34 @@ class App(ctk.CTk):
         }
         delete_label = delete_labels.get(kind, "  Delete File...")
         menu.add_command(label=delete_label,
-                         command=lambda i=item: self._confirm_delete_ws(i))
+                         command=lambda v=vals: self._confirm_delete_ws(v))
 
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
 
-    def _ws_open_item(self, item):
-        """Open a workspace file (called from context menu)."""
-        self.ws_tree.selection_set(item)
-        self.on_workspace_select(None)
+    def _ws_open_vals(self, vals):
+        """Open a workspace file from a pre-captured vals tuple (context menu)."""
+        _kind, profile, folder, filename, project = (str(v) for v in vals[:5])
+        prog = os.path.splitext(filename)[0]
+        if folder == "proposals":
+            code = workspace.read_file(profile, folder, filename, project=project)
+            if code:
+                self.open_code_tab(f"Proposal: {prog}", code, None, prog,
+                                   "Program", source_profile=profile)
+        elif filename.endswith(".json"):
+            fields = workspace.read_table_fields(profile, prog, project=project)
+            if fields:
+                self.open_ddic_tab(f"Table: {prog}", {"NAME": prog, "FIELDS": fields}, "Table")
+        else:
+            code = workspace.read_file(profile, folder, filename, project=project)
+            if code:
+                self.open_code_tab(f"Program: {prog}", code, None, prog,
+                                   "Program", source_profile=profile)
 
-    def _confirm_delete_ws(self, item):
-        """Confirm and delete a workspace file or folder."""
-        vals = self.ws_tree.item(item, "values")
-        if not vals or len(vals) < 5:
-            return
-
+    def _confirm_delete_ws(self, vals):
+        """Confirm and delete a workspace file or folder. vals is captured at right-click time."""
         kind, profile, folder, fname, proj = (str(v) for v in vals[:5])
         ws_root = os.path.join(_APP_DATA_DIR, "workspace")
 
