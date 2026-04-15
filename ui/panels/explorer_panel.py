@@ -43,6 +43,80 @@ def _apply_style(name: str, heading_color: str = "#9cdcfe"):
           foreground=[("selected", "#ffffff")])
 
 
+# ── Icon factory ───────────────────────────────────────────────────────────────
+
+def _build_icons():
+    """Create 16×16 PIL-based PhotoImage icons.  Returns {} if PIL unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except ImportError:
+        return {}
+
+    S = 16
+
+    def folder(tab_rgba, body_rgba):
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # Body
+        d.rounded_rectangle([0, 4, S - 1, S - 2], radius=2, fill=body_rgba)
+        # Tab (top-left bump)
+        d.rounded_rectangle([0, 2, 6, 5], radius=1, fill=tab_rgba)
+        # Merge tab bottom into body top seamlessly
+        d.rectangle([0, 4, 6, 5], fill=body_rgba)
+        # Subtle top highlight
+        d.line([(1, 4), (S - 2, 4)], fill=(255, 255, 255, 55))
+        return ImageTk.PhotoImage(img)
+
+    def filei(fold_rgba, body_rgba, border_rgba):
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        fold = 4
+        # Main body (clipped top-right corner)
+        d.polygon([(1, 1), (S - fold - 1, 1), (S - 1, fold + 1),
+                   (S - 1, S - 2), (1, S - 2)], fill=body_rgba)
+        # Folded corner triangle
+        d.polygon([(S - fold - 1, 1), (S - 1, fold + 1),
+                   (S - fold - 1, fold + 1)], fill=fold_rgba)
+        # Border outline
+        d.line([(1, 1), (S - fold - 1, 1)], fill=border_rgba)
+        d.line([(S - fold - 1, 1), (S - 1, fold + 1), (S - 1, S - 2),
+                (1, S - 2), (1, 1)], fill=border_rgba)
+        return ImageTk.PhotoImage(img)
+
+    def profile_icon():
+        """Simple monitor/screen icon."""
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # Screen body
+        d.rounded_rectangle([0, 1, S - 1, S - 4], radius=2,
+                             fill=(70, 120, 195, 255))
+        # Screen inner (dark area)
+        d.rectangle([2, 3, S - 3, S - 6], fill=(20, 50, 110, 255))
+        # Stand
+        d.rectangle([6, S - 4, 9, S - 2], fill=(70, 120, 195, 255))
+        # Base
+        d.rectangle([3, S - 2, S - 4, S - 1], fill=(70, 120, 195, 255))
+        return ImageTk.PhotoImage(img)
+
+    return {
+        "profile":      profile_icon(),
+        # Project folder — classic Windows yellow
+        "folder":       folder((195, 145,   0, 255), (240, 190,  20, 255)),
+        # Programs subfolder — blue
+        "folder_prog":  folder(( 50, 100, 190, 255), ( 75, 135, 225, 255)),
+        # Tables subfolder — teal
+        "folder_tbl":   folder((  0, 135, 145, 255), ( 20, 170, 182, 255)),
+        # Proposals subfolder — purple
+        "folder_prop":  folder((130,  55, 175, 255), (160,  85, 210, 255)),
+        # ABAP source file — light blue
+        "file_abap":    filei((120, 170, 220, 255), (205, 230, 255, 255),
+                              ( 85, 135, 185, 255)),
+        # JSON / table file — amber
+        "file_json":    filei((195, 148,  50, 255), (255, 222, 150, 255),
+                              (170, 115,  25, 255)),
+    }
+
+
 # ── Panel ──────────────────────────────────────────────────────────────────────
 
 class ExplorerPanel(ctk.CTkFrame):
@@ -115,6 +189,10 @@ class ExplorerPanel(ctk.CTkFrame):
     def _setup_workspace_tree(self, parent):
         _apply_style("WS.Treeview", heading_color="#9cdcfe")
 
+        # Build icons — store on self to prevent GC, also expose on app
+        self._ws_icons = _build_icons()
+        self.app.ws_icons = self._ws_icons
+
         # ── Toolbar ───────────────────────────────────────────────────────────
         toolbar = ctk.CTkFrame(parent, height=34, fg_color="#252526")
         toolbar.grid(row=0, column=0, sticky="ew")
@@ -178,7 +256,8 @@ class ExplorerPanel(ctk.CTkFrame):
         sb_y.grid(row=0, column=1, sticky="ns")
         sb_x.grid(row=1, column=0, sticky="ew")
 
-        tree.bind("<Double-1>", self.app.on_workspace_select)
+        tree.bind("<Double-1>",  self.app.on_workspace_select)
+        tree.bind("<Button-3>",  self.app.on_ws_right_click)
 
         self.app.ws_tree = tree
 

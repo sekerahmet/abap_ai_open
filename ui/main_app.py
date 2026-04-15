@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import difflib
+import shutil
+import tkinter as tk
 import tkinter.messagebox as mbox
 from tkinter.simpledialog import askstring
 from tkinter import ttk
@@ -735,7 +737,9 @@ class App(ctk.CTk):
         """Reload the Workspace Explorer tree from disk with git status annotations."""
         if not hasattr(self, "ws_tree"):
             return
-        tree = self.ws_tree
+        tree  = self.ws_tree
+        icons = getattr(self, "ws_icons", {})
+
         for item in tree.get_children():
             tree.delete(item)
 
@@ -754,18 +758,24 @@ class App(ctk.CTk):
         def _tag(st):
             return {"M": "ws_modified", "?": "ws_new", "D": "ws_deleted"}.get(st, "")
 
-        def _icon(st):
+        def _git_prefix(st):
             return {"M": "● ", "?": "+ ", "D": "✗ "}.get(st, "")
 
         # Pre-aggregate: which projects/profiles have dirty children?
-        proj_st: dict = {}   # "profile/proj" -> worst status
-        prof_st: dict = {}   # "profile"      -> worst status
+        proj_st: dict = {}
+        prof_st: dict = {}
         for path, st in git_st.items():
             parts = path.split("/")
             if len(parts) >= 2:
                 pk = f"{parts[0]}/{parts[1]}"
                 proj_st[pk] = _worst(proj_st.get(pk, ""), st)
                 prof_st[parts[0]] = _worst(prof_st.get(parts[0], ""), st)
+
+        _subfolder_icon = {
+            "programs":  icons.get("folder_prog"),
+            "tables":    icons.get("folder_tbl"),
+            "proposals": icons.get("folder_prop"),
+        }
 
         # ── Build tree ────────────────────────────────────────────────────────
         for profile in sorted(profiles):
@@ -775,37 +785,55 @@ class App(ctk.CTk):
 
             pst  = prof_st.get(profile, "")
             ptag = _tag(pst)
+            kw   = {"image": icons["profile"]} if icons.get("profile") else {}
             p_node = tree.insert("", "end",
-                                 text=f"{_icon(pst)}👤  {profile}",
+                                 text=f"{_git_prefix(pst)}{profile}",
                                  open=True,
-                                 tags=(ptag,) if ptag else ())
+                                 values=("_profile", profile, "", "", ""),
+                                 tags=(ptag,) if ptag else (),
+                                 **kw)
 
             for proj_name in sorted(projects.keys()):
-                pk   = f"{profile}/{proj_name}"
-                prst = proj_st.get(pk, "")
+                pk    = f"{profile}/{proj_name}"
+                prst  = proj_st.get(pk, "")
                 prtag = _tag(prst)
+                kw    = {"image": icons["folder"]} if icons.get("folder") else {}
                 proj_node = tree.insert(p_node, "end",
-                                        text=f"{_icon(prst)}📂  {proj_name}",
+                                        text=f"{_git_prefix(prst)}{proj_name}",
                                         open=True,
-                                        tags=(prtag,) if prtag else ())
+                                        values=("_project", profile, "", "", proj_name),
+                                        tags=(prtag,) if prtag else (),
+                                        **kw)
+
                 subfolders = projects[proj_name]
                 for folder in ("programs", "tables", "proposals"):
                     fnames = subfolders.get(folder, [])
                     if not fnames:
                         continue
                     label, _ = self._WS_FOLDER_META[folder]
+                    kw = {"image": _subfolder_icon[folder]} if _subfolder_icon.get(folder) else {}
                     f_node = tree.insert(proj_node, "end",
                                          text=f"{label}  ({len(fnames)})",
-                                         open=True)
+                                         open=True,
+                                         values=("_folder", profile, folder, "", proj_name),
+                                         **kw)
+
                     for fname in fnames:
-                        kind = "ABAP" if fname.endswith(".abap") else "Table" if fname.endswith(".json") else ""
-                        fkey = f"{profile}/{proj_name}/{folder}/{fname}"
-                        fst  = git_st.get(fkey, "")
-                        ftag = _tag(fst)
+                        is_abap = fname.endswith(".abap")
+                        is_json = fname.endswith(".json")
+                        kind    = "ABAP" if is_abap else "Table" if is_json else ""
+                        fkey    = f"{profile}/{proj_name}/{folder}/{fname}"
+                        fst     = git_st.get(fkey, "")
+                        ftag    = _tag(fst)
+                        fimg    = (icons.get("file_abap") if is_abap
+                                   else icons.get("file_json") if is_json
+                                   else None)
+                        kw = {"image": fimg} if fimg else {}
                         tree.insert(f_node, "end",
-                                    text=f"{_icon(fst)}{fname}",
+                                    text=f"{_git_prefix(fst)}{fname}",
                                     values=(kind, profile, folder, fname, proj_name),
-                                    tags=(ftag,) if ftag else ())
+                                    tags=(ftag,) if ftag else (),
+                                    **kw)
 
     def on_workspace_select(self, _event):
         """Open a workspace file when double-clicked in the Workspace Explorer."""
@@ -815,8 +843,8 @@ class App(ctk.CTk):
         if not sel:
             return
         vals = self.ws_tree.item(sel[0], "values")
-        if not vals or len(vals) < 5:
-            return   # clicked a group node, not a file
+        if not vals or len(vals) < 5 or str(vals[0]).startswith("_"):
+            return   # clicked a group/folder node, not a file
 
         _kind, profile, folder, filename, project = vals[0], vals[1], vals[2], vals[3], vals[4]
         prog = os.path.splitext(filename)[0]   # e.g. ZPROGRAM
@@ -842,6 +870,93 @@ class App(ctk.CTk):
                                    "Program", source_profile=profile)
             else:
                 self.write_log(f"[WS] Could not read {filename}")
+
+    # ── Workspace context menu ────────────────────────────────────────────────
+
+    def on_ws_right_click(self, event):
+        """Show context menu on right-click in the Workspace tree."""
+        tree = self.ws_tree
+        item = tree.identify_row(event.y)
+        if not item:
+            return
+        tree.selection_set(item)
+
+        vals = tree.item(item, "values")
+        if not vals or len(vals) < 5:
+            return
+
+        kind = str(vals[0])
+        menu = tk.Menu(self, tearoff=0,
+                       bg="#252526", fg="#cccccc",
+                       activebackground="#094771", activeforeground="#ffffff",
+                       relief="flat", bd=1)
+
+        # "Open" only for actual file nodes
+        if not kind.startswith("_"):
+            menu.add_command(label="  Open",
+                             command=lambda i=item: self._ws_open_item(i))
+            menu.add_separator()
+
+        # Delete label varies by node type
+        delete_labels = {
+            "_profile": "  Delete Profile Folder...",
+            "_project": "  Delete Project...",
+            "_folder":  "  Delete Folder Contents...",
+        }
+        delete_label = delete_labels.get(kind, "  Delete File...")
+        menu.add_command(label=delete_label,
+                         command=lambda i=item: self._confirm_delete_ws(i))
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _ws_open_item(self, item):
+        """Open a workspace file (called from context menu)."""
+        self.ws_tree.selection_set(item)
+        self.on_workspace_select(None)
+
+    def _confirm_delete_ws(self, item):
+        """Confirm and delete a workspace file or folder."""
+        vals = self.ws_tree.item(item, "values")
+        if not vals or len(vals) < 5:
+            return
+
+        kind, profile, folder, fname, proj = (str(v) for v in vals[:5])
+        ws_root = os.path.join(_APP_DATA_DIR, "workspace")
+
+        if kind == "_profile":
+            path = os.path.join(ws_root, profile)
+            msg  = f"Delete entire profile folder?\n\n📁  {profile}"
+        elif kind == "_project":
+            path = os.path.join(ws_root, profile, proj)
+            msg  = f"Delete entire project folder?\n\n📁  {proj}"
+        elif kind == "_folder":
+            path = os.path.join(ws_root, profile, proj, folder)
+            msg  = f"Delete folder and all its contents?\n\n📁  {proj} / {folder}"
+        else:
+            path = os.path.join(ws_root, profile, proj, folder, fname)
+            msg  = f"Delete file?\n\n📄  {fname}"
+
+        if not os.path.exists(path):
+            self.write_log(f"[WS] Not found: {path}")
+            return
+
+        if not mbox.askyesno("Delete", msg, icon="warning"):
+            return
+
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            self.write_log(f"[WS] Deleted: {path}")
+        except Exception as e:
+            mbox.showerror("Delete Error", str(e))
+            return
+
+        self.refresh_workspace_tree()
 
     def _poll_proposals(self):
         """Poll workspace PROP/ every 2 seconds. Opens new proposals as diff tabs."""
