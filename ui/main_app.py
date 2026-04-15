@@ -64,7 +64,7 @@ class App(ctk.CTk):
         # Initial logs tab creation
         logs_content = self.editor.add_tab("System Logs", is_closable=False)
         self.logs_text = ctk.CTkTextbox(logs_content, font=("Consolas", 12), wrap="word")
-        self.logs_text.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        self.logs_text.pack(fill="both", expand=True, padx=1, pady=1)
         self.logs_text.configure(state="disabled")
         self.editor.set_active("System Logs")
         
