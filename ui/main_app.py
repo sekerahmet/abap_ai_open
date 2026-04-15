@@ -18,7 +18,7 @@ from utils import github_sync
 # Import new modular panels
 from ui.panels.sidebar import SidebarPanel
 from ui.panels.editor import EditorPanel
-from ui.panels.chat_panel import ChatPanel
+from ui.panels.explorer_panel import ExplorerPanel
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -56,8 +56,8 @@ class App(ctk.CTk):
         self.editor = EditorPanel(self, self)
         self.editor.grid(row=0, column=1, sticky="nsew", padx=2)
         
-        self.chat = ChatPanel(self, self)
-        self.chat.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
+        self.explorer_panel = ExplorerPanel(self, self)
+        self.explorer_panel.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
         
         # Initial logs tab creation
         logs_content = self.editor.add_tab("System Logs", is_closable=False)
@@ -70,20 +70,18 @@ class App(ctk.CTk):
         names = list(self.systems_data.keys())
         if names: self.on_system_select(names[0])
 
-        # Prefill AI
-        self.initialize_ai_from_env()
-
         # Proposal file watcher — polls workspace/PROP every 2 seconds
         self._watched_proposals = set()
         self._poll_proposals()
-        # Populate workspace explorer on startup
+        # Populate workspace explorer on startup (includes git status + branch label)
         self.after(500, self.refresh_workspace_tree)
+        self.after(600, self.explorer_panel.update_branch_label)
 
     def _setup_layout(self):
         self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=0, minsize=320) 
-        self.grid_columnconfigure(1, weight=1)              
-        self.grid_columnconfigure(2, weight=0, minsize=380) 
+        self.grid_columnconfigure(0, weight=0, minsize=270)   # slim connection sidebar
+        self.grid_columnconfigure(1, weight=1)                # editor
+        self.grid_columnconfigure(2, weight=0, minsize=420)   # explorer panel
 
     # -- System Profile Management --
     def load_systems_file(self):
@@ -720,22 +718,6 @@ class App(ctk.CTk):
             txt.see(pos); txt.tag_add("hl", pos, f"{line}.end")
             txt.tag_config("hl", background="#4a4a00")
 
-    def send_chat(self):
-        msg = self.chat_input.get().strip()
-        if not msg: return
-        self.chat_input.delete(0, "end")
-        self.update_chat_log(f"You: {msg}")
-        
-        code = self.tabs_dict[self.active_tab_name]["code"] if self.active_tab_name in self.tabs_dict else ""
-        context = f"--- ACTIVE: {self.active_tab_name} ---\n{code}\n\nUSER: {msg}"
-        self.send_btn.configure(state="disabled")
-        threading.Thread(target=self.run_ai, args=(context,), daemon=True).start()
-
-    def run_ai(self, prompt):
-        # Explicit routing to chat panel's response handler for FETCH and PROPOSAL parsing
-        res = self.controller.send_chat(prompt)
-        self.after(0, self.chat.on_chat_response, res)
-
     def open_suggestion_tab(self, name, scode):
         self.write_log(f"Suggestion for {name} generated.")
         self.open_code_tab(f"Proposal: {name}", scode)
@@ -750,7 +732,7 @@ class App(ctk.CTk):
     }
 
     def refresh_workspace_tree(self):
-        """Reload the Workspace Explorer tree from disk."""
+        """Reload the Workspace Explorer tree from disk with git status annotations."""
         if not hasattr(self, "ws_tree"):
             return
         tree = self.ws_tree
@@ -762,15 +744,50 @@ class App(ctk.CTk):
             tree.insert("", "end", text="(workspace is empty)")
             return
 
+        # ── Git status ────────────────────────────────────────────────────────
+        git_st = github_sync.get_git_status()   # { "profile/proj/folder/file": "M"|"?"|"D" }
+
+        def _worst(a, b):
+            pri = {"M": 3, "?": 2, "D": 1}
+            return a if pri.get(a, 0) >= pri.get(b, 0) else b
+
+        def _tag(st):
+            return {"M": "ws_modified", "?": "ws_new", "D": "ws_deleted"}.get(st, "")
+
+        def _icon(st):
+            return {"M": "● ", "?": "+ ", "D": "✗ "}.get(st, "")
+
+        # Pre-aggregate: which projects/profiles have dirty children?
+        proj_st: dict = {}   # "profile/proj" -> worst status
+        prof_st: dict = {}   # "profile"      -> worst status
+        for path, st in git_st.items():
+            parts = path.split("/")
+            if len(parts) >= 2:
+                pk = f"{parts[0]}/{parts[1]}"
+                proj_st[pk] = _worst(proj_st.get(pk, ""), st)
+                prof_st[parts[0]] = _worst(prof_st.get(parts[0], ""), st)
+
+        # ── Build tree ────────────────────────────────────────────────────────
         for profile in sorted(profiles):
             projects = workspace.list_files(profile)
             if not projects:
                 continue
 
-            p_node = tree.insert("", "end", text=f"👤  {profile}", open=True)
+            pst  = prof_st.get(profile, "")
+            ptag = _tag(pst)
+            p_node = tree.insert("", "end",
+                                 text=f"{_icon(pst)}👤  {profile}",
+                                 open=True,
+                                 tags=(ptag,) if ptag else ())
+
             for proj_name in sorted(projects.keys()):
+                pk   = f"{profile}/{proj_name}"
+                prst = proj_st.get(pk, "")
+                prtag = _tag(prst)
                 proj_node = tree.insert(p_node, "end",
-                                        text=f"📂  {proj_name}", open=True)
+                                        text=f"{_icon(prst)}📂  {proj_name}",
+                                        open=True,
+                                        tags=(prtag,) if prtag else ())
                 subfolders = projects[proj_name]
                 for folder in ("programs", "tables", "proposals"):
                     fnames = subfolders.get(folder, [])
@@ -781,8 +798,14 @@ class App(ctk.CTk):
                                          text=f"{label}  ({len(fnames)})",
                                          open=True)
                     for fname in fnames:
-                        tree.insert(f_node, "end", text=fname,
-                                    values=(profile, folder, fname, proj_name))
+                        kind = "ABAP" if fname.endswith(".abap") else "Table" if fname.endswith(".json") else ""
+                        fkey = f"{profile}/{proj_name}/{folder}/{fname}"
+                        fst  = git_st.get(fkey, "")
+                        ftag = _tag(fst)
+                        tree.insert(f_node, "end",
+                                    text=f"{_icon(fst)}{fname}",
+                                    values=(kind, profile, folder, fname, proj_name),
+                                    tags=(ftag,) if ftag else ())
 
     def on_workspace_select(self, _event):
         """Open a workspace file when double-clicked in the Workspace Explorer."""
@@ -792,10 +815,10 @@ class App(ctk.CTk):
         if not sel:
             return
         vals = self.ws_tree.item(sel[0], "values")
-        if not vals or len(vals) < 4:
+        if not vals or len(vals) < 5:
             return   # clicked a group node, not a file
 
-        profile, folder, filename, project = vals[0], vals[1], vals[2], vals[3]
+        _kind, profile, folder, filename, project = vals[0], vals[1], vals[2], vals[3], vals[4]
         prog = os.path.splitext(filename)[0]   # e.g. ZPROGRAM
 
         if folder == "proposals":
@@ -857,10 +880,6 @@ class App(ctk.CTk):
                                            source_profile=profile)
         self.after(2000, self._poll_proposals)
 
-    def initialize_ai_from_env(self):
-        key = os.getenv("GEMINI_API_KEY")
-        if key: self.controller.initialize_ai(key)
-
     def write_log(self, text):
         self.logs_text.configure(state="normal")
         self.logs_text.insert("end", f">>> {text}\n")
@@ -868,18 +887,11 @@ class App(ctk.CTk):
         self.logs_text.configure(state="disabled")
         self.update_idletasks() # Force UI refresh for synchronous feedback
 
-    def update_chat_log(self, text):
-        self.chat_log.configure(state="normal")
-        self.chat_log.insert("end", f"\n{text}\n")
-        self.chat_log.see("end")
-        self.chat_log.configure(state="disabled")
-
     def copy_to_clipboard(self, text):
         self.clipboard_clear(); self.clipboard_append(text); self.write_log("Copied.")
 
     def reset_buttons(self):
         self.fetch_btn.configure(state="normal", text="Fetch")
-        self.send_btn.configure(state="normal")
 
     # ── SAP Upload ─────────────────────────────────────────────────────────────
 
@@ -1051,6 +1063,8 @@ class App(ctk.CTk):
             ok, msg = github_sync.push_workspace(profile)
             self.after(0, self.write_log, f"[GitHub] {msg}")
             if ok:
+                self.after(0, self.refresh_workspace_tree)
+                self.after(0, self.explorer_panel.update_branch_label)
                 self.after(0, mbox.showinfo,  "GitHub Push", msg)
             else:
                 self.after(0, mbox.showerror, "GitHub Push Failed", msg)
@@ -1069,6 +1083,7 @@ class App(ctk.CTk):
             self.after(0, self.write_log, f"[GitHub] {msg}")
             if ok:
                 self.after(0, self.refresh_workspace_tree)
+                self.after(0, self.explorer_panel.update_branch_label)
                 self.after(0, mbox.showinfo,  "GitHub Pull", msg)
             else:
                 self.after(0, mbox.showerror, "GitHub Pull Failed", msg)

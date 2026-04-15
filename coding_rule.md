@@ -14,7 +14,7 @@ Breaking layer separation causes circular imports and makes unit testing impossi
 
 ## 2. Threading — Non-Negotiable
 
-Every SAP RFC call and every AI call **must** run in a daemon thread.
+Every SAP RFC call **must** run in a daemon thread.
 Every widget update **must** go through `self.after(0, fn, args)`.
 
 ```python
@@ -32,9 +32,9 @@ self.write_log("done")                               # widget call from backgrou
 
 ---
 
-## 3. Return Convention for SAP/AI Methods
+## 3. Return Convention for SAP Methods
 
-All `core/` methods that call SAP or AI return a 2-tuple:
+All `core/` methods that call SAP return a 2-tuple:
 ```python
 return result, attrs    # success
 return None, error_str  # failure
@@ -120,11 +120,11 @@ reach panel widgets. Follow this pattern when adding new fields.
 
 | Thing | Convention | Example |
 |---|---|---|
-| Background worker method | `run_*` | `run_fetch`, `run_ai` |
+| Background worker method | `run_*` | `run_fetch`, `run_proactive_check` |
 | GUI update / tab opener | `open_*_tab`, `update_*`, `write_*` | `open_code_tab`, `write_log` |
 | SAP reader methods | `fetch_*`, `check_*` | `fetch_table`, `check_objects_batch` |
 | Panel setup methods | `_setup_*` | `_setup_ui`, `_setup_explorer` |
-| Private helpers | leading underscore | `_merge`, `_ensure_chat` |
+| Private helpers | leading underscore | `_merge`, `_worst` |
 
 ---
 
@@ -146,14 +146,10 @@ reach panel widgets. Follow this pattern when adding new fields.
 
 ---
 
-## 13. AI Protocol Tags (do not change format)
+## 13. Proposal Protocol (MCP server → IDE)
 
-Gemini system instruction defines two tags — keep the format consistent:
+The MCP server writes proposals to `workspace/{profile}/{project}/proposals/*.abap`.
+The IDE polls every 2000 ms via `_poll_proposals()` and opens a diff tab automatically.
 
-```
-[[FETCH:Category:ObjectName]]          # AI requests autonomous fetch
-[[PROPOSAL:FileName]]code[[END_PROPOSAL]]  # AI wraps a code suggestion
-```
-
-These are parsed by regex in `ChatPanel.on_chat_response`. Any format change requires
-updating both the system instruction in `GeminiClient` and the regex in `ChatPanel`.
+Watched key format: `"profile/project/filename"` — tracked in `_watched_proposals` set.
+Do not change the proposals subfolder name without updating both `workspace.py` and `_poll_proposals`.
