@@ -193,8 +193,8 @@ class ExplorerPanel(ctk.CTkFrame):
         frame.grid_rowconfigure(0, weight=1)
         frame.grid_columnconfigure(0, weight=1)
 
-        # columns: "kind" visible | _p _fo _fn _proj are hidden metadata
-        tree = ttk.Treeview(frame, columns=("kind", "_p", "_fo", "_fn", "_proj"),
+        # columns: "kind" visible | _p _fo _fn _proj _k are hidden metadata
+        tree = ttk.Treeview(frame, columns=("kind", "_p", "_fo", "_fn", "_proj", "_k"),
                             displaycolumns=("kind",), show="tree headings", style="WS.Treeview")
         tree.heading("#0",   text="Name", anchor="w")
         tree.heading("kind", text="Kind", anchor="center")

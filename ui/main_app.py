@@ -210,6 +210,8 @@ class App(ctk.CTk):
             field.insert(0, str(val or ""))
 
     def on_system_select(self, name):
+        if self.sidebar.system_var.get() != name:
+            self.sidebar.system_var.set(name)
         if name in self.systems_data:
             self._fill_fields(self.systems_data[name])
         else:
@@ -223,6 +225,7 @@ class App(ctk.CTk):
         else:
             self._status_conn.set("○  No profile")
         self.write_log(f"Switched to profile: {name}")
+        self.refresh_workspace_tree()
 
     def save_current_system(self):
         sys_name = self.sidebar.system_var.get()
@@ -794,6 +797,14 @@ class App(ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     # Workspace explorer
     # ══════════════════════════════════════════════════════════════════════════
+    # Tree values: (display_kind, profile, folder, filename, project, node_kind)
+    # node_kind is "_profile" | "_project" | "_folder" | "file"
+
+    @staticmethod
+    def _ws_kind(vals) -> str:
+        if len(vals) > 5:
+            return str(vals[5])
+        return str(vals[0]) if str(vals[0]).startswith("_") else "file"
 
     _WS_FOLDER_LABEL = {"programs": "📝  Programs", "tables": "📊  Tables", "proposals": "📬  Proposals"}
 
@@ -803,21 +814,22 @@ class App(ctk.CTk):
             self._ws_refresh_pending = True
             return
         self._ws_refreshing = True
-        threading.Thread(target=self._ws_refresh_worker, daemon=True).start()
+        profile = self.active_profile()
+        threading.Thread(target=self._ws_refresh_worker, args=(profile,), daemon=True).start()
 
-    def _ws_refresh_worker(self):
+    def _ws_refresh_worker(self, profile):
         data, git_st, branch = {}, {}, ""
         try:
-            data   = {p: workspace.list_files(p) for p in workspace.list_profiles()}
+            data   = {profile: workspace.list_files(profile)} if profile else {}
             git_st = github_sync.get_git_status()
             branch = github_sync.get_branch_name()
         except Exception as e:
             self.after(0, self.write_log, f"[WS] Refresh error: {e}")
-        self.after(0, self._ws_apply, data, git_st, branch)
+        self.after(0, self._ws_apply, data, git_st, branch, profile)
 
-    def _ws_apply(self, data, git_st, branch):
+    def _ws_apply(self, data, git_st, branch, profile=""):
         try:
-            self._ws_build(data, git_st)
+            self._ws_build(data, git_st, profile)
             self.explorer_panel.set_branch_label(branch)
             self._status_right.set(f"🌿 {branch}   ·   read-only RFC" if branch else "read-only RFC")
         finally:
@@ -826,7 +838,7 @@ class App(ctk.CTk):
                 self._ws_refresh_pending = False
                 self.refresh_workspace_tree()
 
-    def _ws_build(self, data, git_st):
+    def _ws_build(self, data, git_st, profile=""):
         tree  = self.ws_tree
         icons = getattr(self, "ws_icons", {})
 
@@ -834,8 +846,8 @@ class App(ctk.CTk):
         open_state = {}
         def _collect(item):
             vals = tree.item(item, "values")
-            if vals and len(vals) >= 5 and str(vals[0]).startswith("_"):
-                open_state[(vals[0], vals[1], vals[4], vals[2])] = bool(tree.item(item, "open"))
+            if vals and len(vals) >= 5 and self._ws_kind(vals) != "file":
+                open_state[(self._ws_kind(vals), vals[1], vals[4], vals[2])] = bool(tree.item(item, "open"))
             for child in tree.get_children(item):
                 _collect(child)
         for root_item in tree.get_children():
@@ -843,8 +855,9 @@ class App(ctk.CTk):
         yview = tree.yview()
 
         tree.delete(*tree.get_children())
-        if not data:
-            tree.insert("", "end", text="(workspace is empty)")
+        if not data or not any(data.values()):
+            empty = f"(no cached objects yet for profile {profile})" if profile else "(select a profile)"
+            tree.insert("", "end", text=empty)
             return
 
         pri = {"M": 3, "?": 2, "D": 1}
@@ -875,13 +888,13 @@ class App(ctk.CTk):
             pst = prof_st.get(profile, "")
             p_node = tree.insert("", "end", text=f"{_prefix(pst)}{profile}",
                                  open=open_state.get(("_profile", profile, "", ""), True),
-                                 values=("_profile", profile, "", "", ""),
+                                 values=("", profile, "", "", "", "_profile"),
                                  tags=(_tag(pst),) if _tag(pst) else (), **_img("profile"))
             for proj in sorted(projects):
                 prst = proj_st.get(f"{profile}/{proj}", "")
                 proj_node = tree.insert(p_node, "end", text=f"{_prefix(prst)}{proj}",
                                         open=open_state.get(("_project", profile, proj, ""), True),
-                                        values=("_project", profile, "", "", proj),
+                                        values=("", profile, "", "", proj, "_project"),
                                         tags=(_tag(prst),) if _tag(prst) else (), **_img("folder"))
                 for folder in workspace.FOLDERS:
                     fnames = projects[proj].get(folder, [])
@@ -891,14 +904,14 @@ class App(ctk.CTk):
                     f_node = tree.insert(proj_node, "end",
                                          text=f"{self._WS_FOLDER_LABEL[folder]}  ({len(fnames)})",
                                          open=open_state.get(("_folder", profile, proj, folder), True),
-                                         values=("_folder", profile, folder, "", proj), **kw)
+                                         values=("", profile, folder, "", proj, "_folder"), **kw)
                     for fname in fnames:
                         is_abap, is_json = fname.endswith(".abap"), fname.endswith(".json")
                         kind = "ABAP" if is_abap else "Table" if is_json else ""
                         fst  = git_st.get(f"{profile}/{proj}/{folder}/{fname}", "")
                         kw   = _img("file_abap") if is_abap else _img("file_json") if is_json else {}
                         tree.insert(f_node, "end", text=f"{_prefix(fst)}{fname}",
-                                    values=(kind, profile, folder, fname, proj),
+                                    values=(kind, profile, folder, fname, proj, "file"),
                                     tags=(_tag(fst),) if _tag(fst) else (), **kw)
         try:
             tree.yview_moveto(yview[0])
@@ -910,7 +923,7 @@ class App(ctk.CTk):
         if not sel:
             return
         vals = self.ws_tree.item(sel[0], "values")
-        if vals and len(vals) >= 5 and not str(vals[0]).startswith("_"):
+        if vals and len(vals) >= 5 and self._ws_kind(vals) == "file":
             self._ws_open_vals(vals)
 
     def _ws_open_vals(self, vals):
@@ -948,11 +961,11 @@ class App(ctk.CTk):
         vals = tree.item(item, "values")      # capture now — tree may be rebuilt later
         if not vals or len(vals) < 5:
             return
-        kind = str(vals[0])
+        kind = self._ws_kind(vals)
 
         menu = tk.Menu(self, tearoff=0, bg="#252526", fg="#cccccc",
                        activebackground="#094771", activeforeground="#ffffff", relief="flat", bd=1)
-        if not kind.startswith("_"):
+        if kind == "file":
             menu.add_command(label="  Open", command=lambda v=vals: self._ws_open_vals(v))
         menu.add_command(label="  Show in Windows Explorer", command=lambda v=vals: self._ws_reveal(v))
         menu.add_separator()
@@ -965,9 +978,10 @@ class App(ctk.CTk):
         finally:
             menu.grab_release()
 
-    @staticmethod
-    def _ws_path_for(vals):
-        kind, profile, folder, fname, proj = (str(v) for v in vals[:5])
+    @classmethod
+    def _ws_path_for(cls, vals):
+        _d, profile, folder, fname, proj = (str(v) for v in vals[:5])
+        kind = cls._ws_kind(vals)
         if kind == "_profile":
             return workspace.abs_path(profile)
         if kind == "_project":
@@ -990,7 +1004,8 @@ class App(ctk.CTk):
             self.write_log(f"[WS] Could not open Explorer: {e}")
 
     def _confirm_delete_ws(self, vals):
-        kind, _profile, folder, fname, proj = (str(v) for v in vals[:5])
+        _d, _profile, folder, fname, proj = (str(v) for v in vals[:5])
+        kind = self._ws_kind(vals)
         path = self._ws_path_for(vals)
         label = {"_profile": f"Delete entire profile folder?\n\n📁  {_profile}",
                  "_project": f"Delete entire project folder?\n\n📁  {proj}",
