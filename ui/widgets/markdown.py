@@ -59,15 +59,13 @@ def prose_to_html(text: str) -> str:
             continue
         bm = _BULLET.match(line)
         if bm:
-            if in_list != "ul":
-                close(); out.append("<ul style='margin:2px 0 2px 14px'>"); in_list = "ul"
-            out.append(f"<li>{_inline(bm.group(2))}</li>")
+            close()
+            out.append(f"<p style='margin:2px 0 2px 14px'>•&nbsp; {_inline(bm.group(2))}</p>")
             continue
         nm = _NUM.match(line)
-        if nm:
-            if in_list != "ol":
-                close(); out.append("<ol style='margin:2px 0 2px 14px'>"); in_list = "ol"
-            out.append(f"<li>{_inline(nm.group(3))}</li>")
+        if nm:                       # QLabel's rich text does not number <ol> reliably → explicit numbers
+            close()
+            out.append(f"<p style='margin:2px 0 2px 14px'><b>{nm.group(2)}.</b>&nbsp; {_inline(nm.group(3))}</p>")
             continue
         close()
         out.append(f"<p style='margin:2px 0'>{_inline(line)}</p>")
