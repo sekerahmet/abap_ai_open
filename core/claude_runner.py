@@ -199,6 +199,104 @@ def billing_label() -> str:
     return "API key — pay per token"
 
 
+# ── Transcripts (Claude Code's own session files) ────────────────────────────
+
+_CLAUDE_HOME = os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def _project_dir_candidates(cwd: str) -> list:
+    """Claude Code stores a project's sessions under ~/.claude/projects/<cwd with non-alnum → '-'>."""
+    base = os.path.join(_CLAUDE_HOME, "projects")
+    import re as _re
+    enc = _re.sub(r"[^A-Za-z0-9]", "-", os.path.normpath(cwd))
+    cands = [os.path.join(base, enc), os.path.join(base, enc[0].lower() + enc[1:])]
+    return cands
+
+
+def transcript_path(cwd: str, session_id: str) -> str:
+    if not session_id:
+        return ""
+    for d in _project_dir_candidates(cwd):
+        p = os.path.join(d, f"{session_id}.jsonl")
+        if os.path.isfile(p):
+            return p
+    base = os.path.join(_CLAUDE_HOME, "projects")
+    if os.path.isdir(base):
+        for d in os.listdir(base):
+            p = os.path.join(base, d, f"{session_id}.jsonl")
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def load_transcript(cwd: str, session_id: str) -> list:
+    """
+    [{"role": "user", "text": …} | {"role": "ai", "text": md, "tools": [names]}, …]
+    Tool results, thinking blocks, side-chains and IDE context prefixes are dropped.
+    """
+    path = transcript_path(cwd, session_id)
+    if not path:
+        return []
+    items = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("isSidechain"):
+                    continue
+                t = d.get("type")
+                msg = d.get("message") or {}
+                content = msg.get("content")
+                if t == "user":
+                    if isinstance(content, str):
+                        text = content
+                    elif isinstance(content, list):
+                        parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+                        if not parts:
+                            continue                     # tool_result only
+                        text = "\n".join(parts)
+                    else:
+                        continue
+                    text = _strip_ide_context(text)
+                    if text.strip():
+                        items.append({"role": "user", "text": text})
+                elif t == "assistant" and isinstance(content, list):
+                    texts, tools = [], []
+                    for b in content:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "text" and b.get("text"):
+                            texts.append(b["text"])
+                        elif b.get("type") == "tool_use":
+                            n = b.get("name", "tool")
+                            tools.append(n.split("__")[-1] if "__" in n else n)
+                    if not texts and not tools:
+                        continue
+                    if items and items[-1]["role"] == "ai":
+                        items[-1]["text"] = (items[-1]["text"] + "\n\n" + "\n".join(texts)).strip()
+                        items[-1]["tools"].extend(tools)
+                    else:
+                        items.append({"role": "ai", "text": "\n".join(texts), "tools": tools})
+    except OSError:
+        return []
+    return items
+
+
+def _strip_ide_context(text: str) -> str:
+    """Remove the [IDE context] / [Attached files] preamble the IDE prepends to prompts."""
+    marker = "\n\n"
+    if text.startswith("[IDE context]") or text.startswith("[Attached files"):
+        # the user's own words are the last paragraph block after the preamble
+        parts = text.split(marker)
+        keep = [p for p in parts if not (p.startswith("[IDE context]") or p.startswith("[Attached files")
+                                        or p.startswith("Current content:") or p.startswith("```"))]
+        return marker.join(keep).strip() if keep else text
+    return text
+
+
 # ── Session ───────────────────────────────────────────────────────────────────
 
 class ClaudeSession:
@@ -209,6 +307,7 @@ class ClaudeSession:
         self.session_id = session_id
         self.max_turns = max_turns
         self.model = model                      # "" → CLI default; else passed as --model
+        self.effort = ""                        # "" | low | medium | high | max  (--effort)
         self.total_cost = 0.0
         self.usage, self.usage_saved_at = load_usage()   # {window: (utilization, resets_at)}
         self.mcp_path, self.mcp_name = write_mcp_config(profile)
@@ -231,6 +330,8 @@ class ClaudeSession:
             cmd += ["--mcp-config", self.mcp_path]
         if self.model:
             cmd += ["--model", self.model]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         if self.session_id:
             cmd += ["--resume", self.session_id]
         return cmd

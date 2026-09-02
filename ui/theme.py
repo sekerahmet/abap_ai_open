@@ -62,6 +62,10 @@ QPushButton#danger {{ background: {DANGER}; border: none; color: white; }}
 QPushButton#danger:disabled {{ background: #2e2626; color: #6a5a5a; }}
 QPushButton#claude:disabled, QPushButton#accent:disabled {{ background: #2c2c30; color: #6a6a6e; }}
 QPushButton#ok {{ background: {OK}; border: none; color: white; }}
+QPushButton#chipbtn {{ background: {BORDER}; border: 1px solid #3a3a3e; border-radius: 12px; padding: 3px 10px; color: {TEXT}; }}
+QPushButton#chipbtn:hover {{ background: #3a3a3e; }}
+QPushButton#chipbtn::menu-indicator {{ image: none; width: 0; }}
+QMenu::indicator {{ width: 14px; }}
 QPushButton#flat {{ background: transparent; border: none; color: {MUTED}; padding: 2px 6px; }}
 QPushButton#flat:hover {{ color: {TEXT}; background: {PANEL_ALT}; }}
 QTreeWidget, QTreeView, QTableWidget, QListWidget {{

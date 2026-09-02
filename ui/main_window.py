@@ -944,8 +944,10 @@ class MainWindow(QMainWindow):
         tab.input.send.disconnect(); tab.input.send.connect(_send)
         tab.send_btn.clicked.disconnect(); tab.send_btn.clicked.connect(_send)
         self._add_tab(name, tab, kind="claude")
+        restored = tab.load_history() if session_id else 0
         self.write_log(f"[Claude] {'Resumed' if session_id else 'New'} session {title} "
-                       f"(cwd={cwd}, mcp={'yes' if session.has_mcp else 'no'})")
+                       f"(cwd={cwd}, mcp={'yes' if session.has_mcp else 'no'}"
+                       + (f", {restored} messages restored" if restored else "") + ")")
 
     def get_active_code_context(self) -> str:
         name = self.active_tab_name()

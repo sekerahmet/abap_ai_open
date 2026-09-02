@@ -9,16 +9,26 @@ import shutil
 
 from PySide6.QtCore import Qt, Signal, QMimeData
 from PySide6.QtGui import QImage
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-                               QFrame, QTextEdit, QComboBox, QCheckBox, QFileDialog)
+                               QFrame, QTextEdit, QCheckBox, QFileDialog, QMenu)
 
-from core.claude_runner import ClaudeSession, find_claude
+from core.claude_runner import ClaudeSession, find_claude, load_transcript
 from ui import theme as T
 from ui.bridge import run_bg
 from ui.widgets.markdown import MessageBubble
 
-MODELS = [("Default (CLI setting)", ""), ("Fable 5.1", "claude-fable-5-1"), ("Opus 5", "claude-opus-5"),
-          ("Sonnet 5", "claude-sonnet-5"), ("Haiku 4.5", "claude-haiku-4-5-20251001")]
+# (label, model id, description)
+MODELS = [
+    ("Default", "", "Claude Code's configured model"),
+    ("Opus (1M context)", "opus[1m]", "Opus 5 with 1M context · best for everyday, complex tasks"),
+    ("Fable", "claude-fable-5-1", "Fable 5.1 · most capable for your hardest, longest tasks"),
+    ("Opus", "claude-opus-5", "Opus 5 · strong general model"),
+    ("Sonnet", "claude-sonnet-5", "Sonnet 5 · efficient for routine tasks"),
+    ("Haiku", "claude-haiku-4-5-20251001", "Haiku 4.5 · fastest for quick answers"),
+]
+EFFORTS = [("Effort: default", ""), ("Effort: low", "low"), ("Effort: medium", "medium"),
+           ("Effort: high", "high"), ("Effort: max", "max")]
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 
@@ -121,12 +131,26 @@ class ClaudeChatTab(QWidget):
         b_add = QPushButton("+"); b_add.setObjectName("flat"); b_add.setFixedWidth(30)
         b_add.setToolTip("Attach a file"); b_add.clicked.connect(self._pick_file)
         row.addWidget(b_add)
-        self.model = QComboBox()
-        for label, mid in MODELS:
-            self.model.addItem(label, mid)
-        self.model.setFixedWidth(180)
-        self.model.currentIndexChanged.connect(lambda _i: setattr(self.session, "model", self.model.currentData()))
-        row.addWidget(self.model)
+        self.model_btn = QPushButton(); self.model_btn.setObjectName("chipbtn")
+        self.model_menu = QMenu(self.model_btn)
+        for label, mid, desc in MODELS:
+            act = QAction(f"{label}    —  {desc}", self.model_menu)
+            act.setCheckable(True)
+            act.setData(mid)
+            act.triggered.connect(lambda _c=False, m=mid, l=label: self._set_model(m, l))
+            self.model_menu.addAction(act)
+        self.model_btn.setMenu(self.model_menu)
+        row.addWidget(self.model_btn)
+        self.effort_btn = QPushButton(); self.effort_btn.setObjectName("chipbtn")
+        self.effort_menu = QMenu(self.effort_btn)
+        for label, lvl in EFFORTS:
+            act = QAction(label, self.effort_menu); act.setCheckable(True); act.setData(lvl)
+            act.triggered.connect(lambda _c=False, e=lvl, l=label: self._set_effort(e, l))
+            self.effort_menu.addAction(act)
+        self.effort_btn.setMenu(self.effort_menu)
+        row.addWidget(self.effort_btn)
+        self._set_model(self.session.model or "", next((l for l, m, _ in MODELS if m == (self.session.model or "")), "Default"))
+        self._set_effort(self.session.effort or "", "Effort: default")
         self.mode_lbl = QLabel("read-only tools · MCP"); self.mode_lbl.setObjectName("dim")
         row.addWidget(self.mode_lbl)
         row.addStretch(1)
@@ -136,6 +160,35 @@ class ClaudeChatTab(QWidget):
         cl.addLayout(row)
         lay.addWidget(comp)
         self.input.setFocus()
+
+    def _set_model(self, mid: str, label: str):
+        self.session.model = mid
+        self.model_btn.setText(f"◈ {label}  ▾")
+        for a in self.model_menu.actions():
+            a.setChecked(a.data() == mid)
+
+    def _set_effort(self, lvl: str, label: str):
+        self.session.effort = lvl
+        self.effort_btn.setText(f"{label}  ▾")
+        for a in self.effort_menu.actions():
+            a.setChecked(a.data() == lvl)
+
+    def load_history(self):
+        """Render the earlier turns of a resumed session from Claude Code's transcript."""
+        items = load_transcript(self.session.cwd, self.session.session_id)
+        if not items:
+            return 0
+        for it in items:
+            if it["role"] == "user":
+                self._add_bubble("user").set_markdown(it["text"])
+            else:
+                b = self._add_bubble("ai")
+                for name in it.get("tools", []):
+                    b.add_tool(name); b.tool_done()
+                if it["text"].strip():
+                    b.add_markdown(it["text"])
+        self._add_bubble("meta").set_markdown(f"— {len(items)} earlier message(s) restored —")
+        return len(items)
 
     def _refresh_head(self):
         sid = (self.session.session_id or "new")[:8]
