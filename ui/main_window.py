@@ -35,7 +35,8 @@ from utils.parser import ABAPParser
 from utils import workspace
 from utils import github_sync
 from ui.bridge import Bridge, run_bg
-from ui.dialogs import ConnectionDialog, PasteCodeDialog, CONN_FIELDS
+from ui.dialogs import ConnectionDialog, PasteCodeDialog, SetupCheckDialog, CONN_FIELDS
+from core import env_check
 from ui.widgets.code_editor import CodeView
 from ui.widgets.tables import fields_table, data_table
 from ui.panels.sap_tree import SapObjectsPanel, TADIR_META
@@ -59,6 +60,7 @@ _CODE_TYPES = ("Program", "Global Class", "Function Module")
 _TAB_PREFIXES = ("Program", "Global Class", "Function Module", "Table", "Proposal", "Diff")
 _CATEGORY_FTYPE = {"DICT": "Table", "CLASS": "Global Class", "PROG": "Program", "FUNC": "Function Module"}
 _CONTEXT_INLINE_LIMIT = 20000
+from ui.theme import BAD as T_BAD, WARN as T_WARN, GOOD as T_GOOD
 _TAB_GLYPH = {"Program": "▤", "Global Class": "◆", "Function Module": "ƒ", "Table": "▦", "Data": "▥",
               "Proposal": "✉", "Diff": "±", "Claude": "✦", "System Logs": "≡", "File": "▢"}
 
@@ -98,6 +100,11 @@ class MainWindow(QMainWindow):
         self.side.set_sessions(self.list_claude_sessions(self.active_profile()))
         if not names:
             self.write_log("No SAP profile yet — press ⚙ to create one, or work locally with Open file / Paste code.")
+        self._setup_results = None
+        self._setup_dlg = None
+        self._setup_running = False
+        if self.setup_startup_flag():
+            QTimer.singleShot(1200, lambda: self.run_setup_check(show=False, auto=True))
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI construction
@@ -134,6 +141,12 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         b_open = QPushButton("Open file…"); b_open.clicked.connect(self.open_local_file); tb.addWidget(b_open)
         b_paste = QPushButton("Paste code"); b_paste.clicked.connect(self.paste_code); tb.addWidget(b_paste)
+        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tb.addWidget(spacer)
+        self.setup_btn = QPushButton("Setup …"); self.setup_btn.setObjectName("flat")
+        self.setup_btn.setToolTip("Environment check: SAP RFC SDK, Claude Code CLI, Python/MCP, Git, .env")
+        self.setup_btn.clicked.connect(self.open_setup_dialog)
+        tb.addWidget(self.setup_btn)
         self._refill_profiles()
 
     def _build_center(self):
@@ -222,7 +235,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         try:
             st = {"geometry": bytes(self.saveGeometry().toBase64()).decode(),
-                  "state": bytes(self.saveState().toBase64()).decode()}
+                  "state": bytes(self.saveState().toBase64()).decode(),
+                  "setup_check_startup": self.setup_startup_flag()}
             with open(UI_STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(st, f)
         except Exception:
@@ -231,6 +245,46 @@ class MainWindow(QMainWindow):
             if entry.get("kind") == "claude":
                 entry["widget"].session.stop()
         super().closeEvent(e)
+
+    # ── setup check ───────────────────────────────────────────────────────────
+    def setup_startup_flag(self) -> bool:
+        return bool(self._ui_state.get("setup_check_startup", True))
+
+    def set_setup_startup_flag(self, on: bool):
+        self._ui_state["setup_check_startup"] = bool(on)
+
+    def run_setup_check(self, show=False, auto=False):
+        if self._setup_running:
+            return
+        self._setup_running = True
+        self.setup_btn.setText("Setup …")
+        has_sap = bool(self.sap_profiles())
+        run_bg(lambda: self.ui.call(self._setup_done, env_check.run_all(has_sap), show, auto))
+
+    def _setup_done(self, results, show, auto):
+        self._setup_running = False
+        self._setup_results = results
+        n_err, n_warn = env_check.summary(results)
+        if n_err:
+            self.setup_btn.setText(f"Setup ✗ {n_err}"); self.setup_btn.setStyleSheet(f"color: {T_BAD};")
+        elif n_warn:
+            self.setup_btn.setText(f"Setup ⚠ {n_warn}"); self.setup_btn.setStyleSheet(f"color: {T_WARN};")
+        else:
+            self.setup_btn.setText("Setup ✓"); self.setup_btn.setStyleSheet(f"color: {T_GOOD};")
+        problems = [f"{r['label']}: {r['status']}" for r in results if r["level"] in ("warn", "error")]
+        self.write_log("[Setup] " + ("all good" if not problems else " · ".join(problems)))
+        if self._setup_dlg is not None:
+            self._setup_dlg.set_results(results)
+        if show or (auto and n_err):
+            self.open_setup_dialog()
+
+    def open_setup_dialog(self):
+        if self._setup_dlg is None:
+            self._setup_dlg = SetupCheckDialog(self, self._setup_results, self)
+            self._setup_dlg.finished.connect(lambda _r: setattr(self, "_setup_dlg", None))
+            if self._setup_results is None:
+                self.run_setup_check(show=False)
+        self._setup_dlg.show(); self._setup_dlg.raise_(); self._setup_dlg.activateWindow()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Profiles

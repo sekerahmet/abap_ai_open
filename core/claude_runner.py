@@ -162,6 +162,11 @@ def write_mcp_config(profile: str):
 _auth_cache = None
 
 
+def reset_auth_cache():
+    global _auth_cache
+    _auth_cache = None
+
+
 def auth_info() -> dict:
     """
     Cached `claude auth status`. Keys of interest: loggedIn, authMethod

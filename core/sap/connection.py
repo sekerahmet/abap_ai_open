@@ -14,7 +14,17 @@ App.get_current_conn() before the dict reaches this class.
 
 from contextlib import contextmanager
 
-import pyrfc
+RFC_SDK_HINT = ("SAP RFC SDK not available — copy sapnwrfc.dll, icudt50.dll, icuin50.dll, icuuc50.dll "
+                "next to main.exe (see KURULUM.md / Setup check).")
+
+
+def _pyrfc():
+    """Import pyrfc lazily so the IDE starts (Local mode works) even without the SAP RFC SDK DLLs."""
+    try:
+        import pyrfc
+        return pyrfc
+    except Exception as e:
+        raise ConnectionError(f"{RFC_SDK_HINT} [{e}]") from None
 
 
 class SAPConnectionManager:
@@ -24,6 +34,7 @@ class SAPConnectionManager:
     def _open(self):
         if not self.params.get("ashost"):
             raise ValueError("No SAP connection parameters provided (ashost missing).")
+        pyrfc = _pyrfc()
         try:
             return pyrfc.Connection(**self.params)
         except Exception as e:

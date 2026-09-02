@@ -90,3 +90,22 @@ Profil kutusundan **Local (no SAP)** seçince WORKSPACE paneli serbest bir klas�
 - Bu profil için SAP bağlantısı, DLL ya da `.env` gerekmez (Claude için yine Claude Code CLI
   ve `write_proposal` için MCP sunucusu = Python kurulumu gerekir; yoksa Claude kodu mesajda
   verir, "Open as proposal" ile aynı yere yazılır).
+
+## 7. "Setup" denetimi — bir şey eksikse ne olur?
+
+IDE açılınca sağ üstteki **Setup** butonu ortamı kontrol eder ve sonucu gösterir:
+`Setup ✓` (her şey tamam), `Setup ⚠ n` (isteğe bağlı bir özellik kullanılamıyor),
+`Setup ✗ n` (kurulu bir özellik çalışamıyor). Butona tıklayınca her madde için durum,
+açıklama ve kopyalanabilir kurulum komutu görünür:
+
+| Madde | Eksikse | Çözüm |
+|---|---|---|
+| SAP RFC SDK | SAP profilleri Fetch yapamaz; IDE yine açılır, Local mod çalışır | DLL'leri `main.exe`'nin yanına kopyala |
+| Claude Code CLI | Claude sekmesi açılmaz | `winget install --id Anthropic.ClaudeCode -e`, sonra `claude` ile giriş |
+| Python + MCP | Claude sohbet eder ama SAP araçlarını ve `write_proposal`'ı kullanamaz | Python 3.12 + `pip install -r requirements.txt` |
+| Git | Push / Pull çalışmaz | `winget install --id Git.Git -e` |
+| .env | GitHub senkronu kapalı (isteğe bağlı) | `.env` dosyası (bkz. 4. bölüm) |
+
+Hiçbir eksik programın açılmasını engellemez. Pencere yalnızca gerçekten çalışması beklenen
+bir şey eksikse (ör. SAP profili var ama SDK yok) kendiliğinden açılır; alttaki kutuyla bunu
+kapatabilirsin.

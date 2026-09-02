@@ -41,7 +41,7 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `ui/theme.py` | colours + the application-wide Qt stylesheet (`QSS`) |
 | `ui/bridge.py` | `Bridge.call(fn, …)` = run on the GUI thread from any thread (queued signal); `run_bg` |
 | `ui/main_window.py` | `MainWindow(QMainWindow)` — toolbar, tabs, docks, status bar, all app logic (fetch, discovery, workspace, proposals, git, Claude sessions, Local profile, Open file / Paste code) |
-| `ui/dialogs.py` | `ConnectionDialog`, `PasteCodeDialog`, `CONN_FIELDS` |
+| `ui/dialogs.py` | `ConnectionDialog`, `PasteCodeDialog`, `SetupCheckDialog`, `CONN_FIELDS` |
 | `ui/highlighter_qt.py` | `AbapHighlighter`, `DiffHighlighter` (QSyntaxHighlighter) |
 | `ui/widgets/code_editor.py` | `CodeView` = `CodeEditor(QPlainTextEdit)` with line numbers, current line, Ctrl+F find bar |
 | `ui/widgets/tables.py` | `fields_table`, `data_table` (QTableWidget) |
@@ -51,7 +51,8 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `ui/panels/claude_side.py` | `ClaudeSidePanel` (account, usage bars, session manager) — left dock |
 | `ui/panels/claude_chat.py` | `ClaudeChatTab` (bubbles, composer with attachments / image paste / model combo) |
 | `core/controller.py` | `AnalysisController` — stateless facade; builds a reader per call from the conn dict it receives |
-| `core/sap/connection.py` | `SAPConnectionManager` — one connection per `execute()`, or `session()` for batches; no shared state |
+| `core/env_check.py` | `run_all(has_sap_profiles)` — environment checks (RFC SDK DLLs, Claude CLI + login, Python/fastmcp/pyrfc + mcp_server.py, Git, .env); no Qt |
+| `core/sap/connection.py` | `SAPConnectionManager` — one connection per `execute()`, or `session()` for batches; no shared state. **pyrfc is imported lazily** (`_pyrfc()`) so the IDE starts without the RFC SDK; a missing SDK surfaces as a friendly `ConnectionError` on Fetch |
 | `core/sap/program_reader.py` | `ProgramReader` — programs/includes, function modules, global classes (all includes + methods via TMDIR) |
 | `core/sap/ddic_reader.py` | `DDICReader` — DDIF_FIELDINFO_GET, RFC_READ_TABLE data, chunked TADIR check |
 | `utils/parser.py` | `ABAPParser` — strips comments, extracts DICT/CLASS/INCLUDES/FORMS/FIELDS/EVENTS with line numbers |
@@ -159,6 +160,14 @@ Proposals follow the same rule as SAP projects: the proposal for `<dir>/X.abap` 
 (`<dir>/programs/X` → `<dir>/X` → any `*/programs/X` → anywhere). Diff / Proposal tabs are keyed
 by the target's relative path. `ClaudeSession.is_local` selects `SYSTEM_PROMPT_LOCAL`, which tells
 Claude to use `write_proposal(..., path=<relative file path>)`.
+
+### Setup check
+`MainWindow.run_setup_check()` runs `core.env_check.run_all()` in a worker thread 1.2 s after start
+(if `ui_state.json: setup_check_startup` is not false) and whenever the toolbar "Setup" button /
+dialog Re-check asks. The button shows `Setup ✓` / `Setup ⚠ n` / `Setup ✗ n`; the dialog opens
+automatically only for an *error* (something a configured feature needs, e.g. SAP profiles exist
+but the RFC SDK is missing). Levels: ok / info / warn / error. Nothing here blocks the app —
+Local mode must always work, even with no SAP SDK, no Python and no Claude CLI.
 
 ### Panels talk via signals
 Panels never touch the window; they emit (`jump`, `open_object`, `open_file`, `reveal`, `delete`,

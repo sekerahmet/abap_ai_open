@@ -1,7 +1,12 @@
 """Connection-profile dialog and paste-code dialog."""
 
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-                               QComboBox, QPushButton, QMessageBox, QPlainTextEdit, QDialogButtonBox)
+                               QComboBox, QPushButton, QMessageBox, QPlainTextEdit, QDialogButtonBox,
+                               QScrollArea, QWidget, QFrame, QCheckBox, QApplication)
+
+from ui import theme as T
 
 
 CONN_FIELDS = [
@@ -144,3 +149,81 @@ class PasteCodeDialog(QDialog):
             return
         self.result_name, self.result_code, self.result_type = name, code, self.type_box.currentText()
         self.accept()
+
+
+# ── Setup check ───────────────────────────────────────────────────────────────
+
+_LEVEL_GLYPH = {"ok": ("✓", T.GOOD), "info": ("○", T.MUTED), "warn": ("⚠", T.WARN), "error": ("✗", T.BAD)}
+_KURULUM_URL = "https://github.com/sekerahmet/abap_ai_open/blob/main/KURULUM.md"
+
+
+class SetupCheckDialog(QDialog):
+    """
+    Non-modal overview of the environment (RFC SDK, Claude CLI, Python/MCP, Git, .env) with
+    fix hints and copyable commands.  app must provide run_setup_check(show) and
+    setup_startup_flag / set_setup_startup_flag(bool).
+    """
+
+    def __init__(self, app, results, parent=None):
+        super().__init__(parent)
+        self.app = app
+        self.setWindowTitle("Setup check")
+        self.setMinimumSize(640, 420)
+        self.resize(720, 520)
+        lay = QVBoxLayout(self); lay.setSpacing(8)
+        head = QLabel("What this machine can do right now. Nothing here is required to browse local files.")
+        head.setObjectName("muted"); head.setWordWrap(True)
+        lay.addWidget(head)
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        lay.addWidget(self.scroll, 1)
+        self.startup_chk = QCheckBox("Check at startup and open this window when something a configured feature needs is missing")
+        self.startup_chk.setChecked(bool(app.setup_startup_flag()))
+        self.startup_chk.toggled.connect(app.set_setup_startup_flag)
+        lay.addWidget(self.startup_chk)
+        row = QHBoxLayout()
+        self.b_recheck = QPushButton("⟳ Re-check"); self.b_recheck.setObjectName("accent")
+        self.b_recheck.clicked.connect(self._recheck)
+        b_doc = QPushButton("Open KURULUM.md"); b_doc.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(_KURULUM_URL)))
+        b_close = QPushButton("Close"); b_close.clicked.connect(self.close)
+        row.addWidget(self.b_recheck); row.addWidget(b_doc); row.addStretch(1); row.addWidget(b_close)
+        lay.addLayout(row)
+        self.set_results(results)
+
+    def _recheck(self):
+        self.b_recheck.setEnabled(False); self.b_recheck.setText("Checking…")
+        self.app.run_setup_check(show=False)
+
+    def set_results(self, results):
+        self.b_recheck.setEnabled(True); self.b_recheck.setText("⟳ Re-check")
+        body = QWidget(); bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(8)
+        if results is None:
+            lbl = QLabel("Checking…"); lbl.setObjectName("muted"); bl.addWidget(lbl)
+        for r in results or []:
+            bl.addWidget(self._card(r))
+        bl.addStretch(1)
+        self.scroll.setWidget(body)
+
+    def _card(self, r: dict) -> QFrame:
+        card = QFrame(); card.setObjectName("card")
+        cl = QVBoxLayout(card); cl.setContentsMargins(12, 8, 12, 8); cl.setSpacing(4)
+        glyph, color = _LEVEL_GLYPH.get(r["level"], ("•", T.TEXT))
+        top = QHBoxLayout()
+        g = QLabel(glyph); g.setStyleSheet(f"color: {color}; font-size: 15px; font-weight: bold;"); g.setFixedWidth(22)
+        name = QLabel(r["label"]); name.setStyleSheet("font-weight: bold;")
+        st = QLabel(r["status"]); st.setStyleSheet(f"color: {color};")
+        top.addWidget(g); top.addWidget(name); top.addSpacing(8); top.addWidget(st, 1)
+        cl.addLayout(top)
+        if r.get("detail"):
+            d = QLabel(r["detail"]); d.setObjectName("dim"); d.setWordWrap(True)
+            d.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); cl.addWidget(d)
+        if r.get("fix"):
+            f = QLabel(r["fix"]); f.setWordWrap(True)
+            f.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); cl.addWidget(f)
+        if r.get("cmd"):
+            row = QHBoxLayout()
+            e = QLineEdit(r["cmd"]); e.setReadOnly(True); e.setStyleSheet(f'font-family: "{T.MONO}";')
+            b = QPushButton("Copy"); b.setFixedWidth(60)
+            b.clicked.connect(lambda _c=False, t=r["cmd"], btn=b: (QApplication.clipboard().setText(t), btn.setText("Copied")))
+            row.addWidget(e, 1); row.addWidget(b)
+            cl.addLayout(row)
+        return card
