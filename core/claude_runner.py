@@ -23,6 +23,35 @@ _APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))
 _APP_DIR = os.path.join(_APPDATA, "ABAP_AI")
 
 READ_TOOLS = ["Read", "Glob", "Grep", "LS"]
+USAGE_FILE = os.path.join(_APP_DIR, "claude_usage.json")
+
+# rate-limit windows reported by the CLI → UI label (order = display order)
+USAGE_WINDOWS = [
+    ("five_hour", "Session (5h)"),
+    ("seven_day", "Weekly (7d)"),
+    ("seven_day_overage_included", "Fable limit (7d)"),
+]
+
+
+def load_usage() -> tuple:
+    """(usage_dict, saved_epoch) from the last rate_limit_event seen by any session."""
+    try:
+        with open(USAGE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        usage = {k: (float(v[0]), v[1]) for k, v in data.get("windows", {}).items()}
+        return usage, data.get("saved_at")
+    except Exception:
+        return {}, None
+
+
+def save_usage(usage: dict):
+    import time
+    try:
+        os.makedirs(_APP_DIR, exist_ok=True)
+        with open(USAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"saved_at": int(time.time()), "windows": usage}, f)
+    except OSError:
+        pass
 
 SYSTEM_PROMPT = (
     "You are running inside ABAP AI IDE, a read-only SAP ABAP code explorer.\n"
@@ -174,7 +203,7 @@ class ClaudeSession:
         self.session_id = session_id
         self.max_turns = max_turns
         self.total_cost = 0.0
-        self.usage = {}           # {"five_hour": (utilization, resets_at_epoch), "seven_day": …}
+        self.usage, self.usage_saved_at = load_usage()   # {window: (utilization, resets_at)}
         self.mcp_path, self.mcp_name = write_mcp_config(profile)
         self._proc = None
 
@@ -237,10 +266,15 @@ class ClaudeSession:
                     self.session_id = sid
                 if ev.get("type") == "rate_limit_event":
                     windows = (ev.get("rate_limit_info") or {}).get("unifiedWindows") or {}
-                    for key in ("five_hour", "seven_day"):
-                        w = windows.get(key)
+                    changed = False
+                    for key, w in windows.items():
                         if isinstance(w, dict) and w.get("utilization") is not None:
                             self.usage[key] = (float(w["utilization"]), w.get("resetsAt"))
+                            changed = True
+                    if changed:
+                        import time
+                        self.usage_saved_at = int(time.time())
+                        save_usage(self.usage)
                 if ev.get("type") == "result":
                     result = ev
                     try:

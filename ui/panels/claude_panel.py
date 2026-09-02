@@ -9,7 +9,10 @@ rendered on the main thread via app.after(0, …).
 import threading
 import customtkinter as ctk
 
-from core.claude_runner import ClaudeSession, find_claude, auth_info, billing_label, format_reset
+import time
+
+from core.claude_runner import (ClaudeSession, find_claude, auth_info, billing_label,
+                                format_reset, USAGE_WINDOWS)
 
 
 class ClaudePanel(ctk.CTkFrame):
@@ -52,27 +55,27 @@ class ClaudePanel(ctk.CTkFrame):
         self.resume_menu.set("Resume earlier session…")
         self.resume_menu.pack(side="right", padx=6)
 
-        # Usage bars (5-hour session window, 7-day window) — filled from rate_limit_event
+        # Usage bars — one row per rate-limit window reported by the CLI
         self.grid_rowconfigure(1, weight=0)
         self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=0)
         usage = ctk.CTkFrame(self, fg_color="#232324", corner_radius=6)
         usage.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
-        usage.grid_columnconfigure((1, 4), weight=1, uniform="u")
+        usage.grid_columnconfigure(1, weight=1)
         small = ctk.CTkFont(family="Segoe UI", size=11)
-        self._usage_vars = {}
-        self._usage_bars = {}
-        for col, key, label in ((0, "five_hour", "Session (5h)"), (3, "seven_day", "Weekly (7d)")):
-            ctk.CTkLabel(usage, text=label, font=small, text_color="#aaaaaa", width=88,
-                         anchor="w").grid(row=0, column=col, padx=(10, 4), pady=5)
+        self._usage_rows = {}
+        for i, (key, label) in enumerate(USAGE_WINDOWS):
+            lbl = ctk.CTkLabel(usage, text=label, font=small, text_color="#aaaaaa", width=120, anchor="w")
             bar = ctk.CTkProgressBar(usage, height=8, progress_color="#3b8ed0")
             bar.set(0)
-            bar.grid(row=0, column=col + 1, sticky="ew", padx=4)
             var = ctk.StringVar(value="—")
-            ctk.CTkLabel(usage, textvariable=var, font=small, text_color="#cccccc", width=150,
-                         anchor="w").grid(row=0, column=col + 2, padx=(4, 10))
-            self._usage_vars[key] = var
-            self._usage_bars[key] = bar
+            txt = ctk.CTkLabel(usage, textvariable=var, font=small, text_color="#cccccc",
+                               width=190, anchor="w")
+            self._usage_rows[key] = (lbl, bar, var, txt)
+        self._usage_stamp = ctk.StringVar(value="")
+        ctk.CTkLabel(usage, textvariable=self._usage_stamp, font=ctk.CTkFont(size=10),
+                     text_color="#777777", anchor="e").grid(row=0, column=3, rowspan=3,
+                                                            padx=(4, 10), sticky="e")
         self._render_usage()
 
         self.out = ctk.CTkTextbox(self, font=("Consolas", 13), wrap="word", fg_color="#1a1a1b")
@@ -114,18 +117,34 @@ class ClaudePanel(ctk.CTkFrame):
                 return
 
     def _render_usage(self):
-        for key, var in self._usage_vars.items():
+        row = 0
+        for key, (lbl, bar, var, txt) in self._usage_rows.items():
             info = self.session.usage.get(key)
-            bar = self._usage_bars[key]
             if not info:
-                var.set("—")
-                bar.set(0)
+                for w in (lbl, bar, txt):
+                    w.grid_forget()
                 continue
             util, resets = info
             pct = max(0.0, min(1.0, util))
             bar.set(pct)
             bar.configure(progress_color="#e06c75" if pct >= 0.9 else "#e5c07b" if pct >= 0.7 else "#3b8ed0")
             var.set(f"{pct * 100:.0f}%   {format_reset(resets)}")
+            lbl.grid(row=row, column=0, padx=(10, 4), pady=3, sticky="w")
+            bar.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
+            txt.grid(row=row, column=2, padx=(4, 4), pady=3, sticky="w")
+            row += 1
+        if row == 0:
+            lbl, bar, var, txt = self._usage_rows[USAGE_WINDOWS[0][0]]
+            var.set("usage appears after the first message")
+            lbl.grid(row=0, column=0, padx=(10, 4), pady=3, sticky="w")
+            txt.grid(row=0, column=2, padx=4, pady=3, sticky="w")
+            self._usage_stamp.set("")
+            return
+        saved = self.session.usage_saved_at
+        if saved:
+            age = int(time.time()) - int(saved)
+            self._usage_stamp.set("live" if age < 120 else
+                                  f"as of {time.strftime('%H:%M', time.localtime(saved))}")
 
     def _subscription(self) -> bool:
         return auth_info().get("authMethod") == "claude.ai"
