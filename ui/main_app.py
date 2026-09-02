@@ -12,6 +12,7 @@ import customtkinter as ctk
 import threading
 import json
 import os
+import re
 import difflib
 import subprocess
 import tkinter as tk
@@ -27,10 +28,12 @@ from utils.highlighter import ABAPHighlighter
 from utils.parser import ABAPParser
 from utils import workspace
 from utils import github_sync
-from ui.panels.sidebar import SidebarPanel, CONN_FIELDS
+from ui import theme as T
+from ui.panels.topbar import TopBar, CONN_FIELDS
 from ui.panels.editor import EditorPanel
 from ui.panels.explorer_panel import ExplorerPanel
 from ui.panels.claude_panel import ClaudePanel
+from ui.widgets.codeview import CodeView
 from core.claude_runner import ClaudeSession, find_claude
 
 ctk.set_appearance_mode("Dark")
@@ -87,14 +90,15 @@ class App(ctk.CTk):
 
         self._setup_layout()
 
-        self.sidebar = SidebarPanel(self.paned, self)
+        self.topbar = TopBar(self, self)
+        self.topbar.grid(row=0, column=0, sticky="ew")
         self.editor = EditorPanel(self.paned, self)
         self.explorer_panel = ExplorerPanel(self.paned, self)
-        self.paned.add(self.sidebar, minsize=250, width=self._ui_state.get("sidebar_w", 290),
-                       stretch="never")
-        self.paned.add(self.editor, minsize=480, stretch="always")
+        self.paned.add(self.editor, minsize=520, stretch="always")
         self.paned.add(self.explorer_panel, minsize=320,
                        width=self._ui_state.get("explorer_w", 460), stretch="never")
+        self._tree_last = ({}, {}, "Discovered Objects")
+        self._ws_last = ({}, {}, "")
 
         logs_content = self.editor.add_tab("System Logs", is_closable=False)
         self.logs_text = ctk.CTkTextbox(logs_content, font=("Consolas", 12), wrap="word")
@@ -106,7 +110,7 @@ class App(ctk.CTk):
         if names:
             self.on_system_select(names[0])
         else:
-            self.write_log("No connection profile yet — fill in the sidebar and press Save Profile.")
+            self.write_log("No connection profile yet — press ⚙ in the top bar to create one.")
 
         self._ws_snapshot = workspace.snapshot()
         self.refresh_workspace_tree()
@@ -116,16 +120,17 @@ class App(ctk.CTk):
     # ── Layout / window state ─────────────────────────────────────────────────
 
     def _setup_layout(self):
-        self.grid_rowconfigure(0, weight=1)
+        self.configure(fg_color=T.BG)
+        self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        # Three resizable columns separated by draggable sashes
+        # Editor | Explorer separated by a draggable sash (top bar above, status bar below)
         self.paned = tk.PanedWindow(self, orient="horizontal", sashwidth=5, sashpad=0,
-                                    sashrelief="flat", bg="#0f0f10", bd=0, opaqueresize=True)
-        self.paned.grid(row=0, column=0, sticky="nsew")
+                                    sashrelief="flat", bg=T.BG, bd=0, opaqueresize=True)
+        self.paned.grid(row=1, column=0, sticky="nsew")
 
         # Status bar
-        bar = ctk.CTkFrame(self, height=26, corner_radius=0, fg_color="#0e639c")
-        bar.grid(row=1, column=0, sticky="ew")
+        bar = ctk.CTkFrame(self, height=26, corner_radius=0, fg_color=T.ACCENT)
+        bar.grid(row=2, column=0, sticky="ew")
         bar.grid_columnconfigure(1, weight=1)
         self._status_conn = ctk.StringVar(value="No profile")
         self._status_msg  = ctk.StringVar(value="Ready")
@@ -175,7 +180,6 @@ class App(ctk.CTk):
                 st["geometry"] = self.geometry()
             else:
                 st["geometry"] = self._ui_state.get("geometry")
-            st["sidebar_w"]  = self.sidebar.winfo_width()
             st["explorer_w"] = self.explorer_panel.winfo_width()
             with open(UI_STATE_FILE, "w", encoding="utf-8") as fh:
                 json.dump(st, fh)
@@ -201,78 +205,50 @@ class App(ctk.CTk):
             json.dump(self.systems_data, f, indent=4, ensure_ascii=False)
 
     def active_profile(self) -> str:
-        name = self.sidebar.system_var.get()
-        return "" if name == "New Profile" else name
-
-    def _fill_fields(self, data: dict):
-        for k in _CONN_KEYS:
-            val = data.get(k)
-            if val is None and k == "router":
-                val = data.get("saprouter", "")
-            field = getattr(self, "sap_" + k)
-            field.delete(0, "end")
-            field.insert(0, str(val or ""))
+        name = self.topbar.system_var.get()
+        return name if name in self.systems_data else ""
 
     def on_system_select(self, name):
-        if self.sidebar.system_var.get() != name:
-            self.sidebar.system_var.set(name)
-        if name in self.systems_data:
-            self._fill_fields(self.systems_data[name])
-        else:
-            self._fill_fields({})
+        if self.topbar.system_var.get() != name:
+            self.topbar.system_var.set(name)
         self.current_main_program = ""
         self.populate_tree({}, {}, header="Discovered Objects")
         if name in self.systems_data:
             self._seed_proposals(name)
-            host = self.systems_data[name].get("ashost", "")
+            data = self.systems_data[name]
+            host = data.get("ashost", "")
             self._status_conn.set(f"●  {name}   {host}")
+            self.topbar.set_host(f"{host}  ·  client {data.get('client', '')}  ·  {data.get('user', '')}")
         else:
             self._status_conn.set("○  No profile")
+            self.topbar.set_host("")
         self.write_log(f"Switched to profile: {name}")
         self.refresh_workspace_tree()
 
-    def save_current_system(self):
-        sys_name = self.sidebar.system_var.get()
-        if sys_name == "New Profile":
-            sys_name = askstring("Profile Name", "Enter a name for this profile:")
-            if not sys_name:
-                return
-            sys_name = sys_name.strip()
-            if not sys_name or any(c in sys_name for c in '\\/:*?"<>|'):
-                mbox.showwarning("Profile Name", "Profile name must not contain \\ / : * ? \" < > |")
-                return
-
-        data = {k: getattr(self, "sap_" + k).get().strip() for k in _CONN_KEYS}
+    def save_profile(self, name: str, data: dict):
+        data = dict(data)
         if data.get("router"):
             data["saprouter"] = data["router"]
-
-        self.systems_data[sys_name] = data
+        self.systems_data[name] = data
         self.flush_systems_file()
-        self.sidebar.set_profiles(list(self.systems_data.keys()), select=sys_name)
-        self._seed_proposals(sys_name)
-        self.write_log(f"Profile '{sys_name}' saved.")
+        self.topbar.set_profiles(list(self.systems_data.keys()), select=name)
+        self.on_system_select(name)
+        self.write_log(f"Profile '{name}' saved.")
 
-    def new_system_profile(self):
-        self.sidebar.system_var.set("New Profile")
-        self._fill_fields({})
-        self.write_log("Ready for new profile.")
-
-    def delete_current_system(self):
-        sys_name = self.sidebar.system_var.get()
-        if sys_name not in self.systems_data:
+    def delete_profile(self, name: str):
+        if name not in self.systems_data:
             return
-        if not mbox.askyesno("Confirm", f"Delete profile '{sys_name}'?"):
-            return
-        del self.systems_data[sys_name]
+        del self.systems_data[name]
         self.flush_systems_file()
         names = list(self.systems_data.keys())
-        self.sidebar.set_profiles(names)
+        self.topbar.set_profiles(names)
         self.on_system_select(names[0] if names else "New Profile")
 
     def get_current_conn(self) -> dict:
+        data = self.systems_data.get(self.active_profile(), {})
         conn = {}
         for k in _CONN_KEYS:
-            val = getattr(self, "sap_" + k).get().strip()
+            val = str(data.get(k) or "").strip()
             if val:
                 conn["saprouter" if k == "router" else k] = val   # pyrfc expects 'saprouter'
         return conn
@@ -282,10 +258,10 @@ class App(ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
 
     def fetch_program_flow(self):
-        program = self.editor.name_entry.get().strip().upper()
+        program = self.topbar.name_entry.get().strip().upper()
         if not program:
             return
-        ftype = self.editor.type_menu.get()
+        ftype = self.topbar.type_menu.get()
         where_clause = ""
         if ftype == "Table Data":
             where_clause = askstring(
@@ -455,7 +431,15 @@ class App(ctk.CTk):
                 registry[o["name"]] = "CLAS"
         self.populate_tree(objs, registry, f"{prog}  (workspace — Re-fetch for TADIR check)")
 
-    def populate_tree(self, objs_dict, registry, header="Discovered Objects"):
+    def filter_sap_tree(self, text: str):
+        objs, registry, header = self._tree_last
+        self.populate_tree(objs, registry, header, flt=text)
+
+    def populate_tree(self, objs_dict, registry, header="Discovered Objects", flt=None):
+        if flt is None:
+            self._tree_last = (objs_dict, registry, header)
+            flt = self.explorer_panel.sap_filter.get() if hasattr(self.explorer_panel, "sap_filter") else ""
+        flt = (flt or "").strip().upper()
         for root in self.tree_roots.values():
             for item in self.tree.get_children(root):
                 self.tree.delete(item)
@@ -470,6 +454,8 @@ class App(ctk.CTk):
                 tadir = registry.get(name, "")
                 if cat == "DICT" and not tadir:
                     continue          # keywords / local vars / screen fields
+                if flt and flt not in name:
+                    continue
                 icon = _TADIR_META.get(tadir, (None, "📍 "))[1] if tadir else "📍 "
                 self.tree.insert(root, "end", text=f"{icon}{name}", values=(tadir, line, name))
 
@@ -570,18 +556,17 @@ class App(ctk.CTk):
         toolbar = ctk.CTkFrame(content, height=30, fg_color="transparent")
         toolbar.pack(fill="x", padx=10, pady=2)
 
-        txt = ctk.CTkTextbox(content, font=("Consolas", 14), wrap="none", fg_color="#1a1a1b")
-        txt.insert("0.0", code)
+        view = CodeView(content, code)
+        txt = view.text
         ABAPHighlighter.apply(txt)
-        txt.configure(state="disabled")
-        txt.pack(fill="both", expand=True)
+        view.pack(fill="both", expand=True, padx=T.PAD, pady=(0, T.PAD))
 
-        self.tabs_dict[name] = {"textbox": txt, "code": code, "prog": prog,
+        self.tabs_dict[name] = {"textbox": txt, "view": view, "code": code, "prog": prog,
                                 "ftype": ftype, "source_profile": source_profile}
         editing = [False]
 
         def _save():
-            current = txt.get("0.0", "end-1c")
+            current = view.get()
             self.tabs_dict[name]["code"] = current
             profile = source_profile or self.active_profile()
             if not (profile and prog):
@@ -605,13 +590,12 @@ class App(ctk.CTk):
 
         def _toggle_edit():
             if not editing[0]:
-                txt.configure(state="normal")
-                txt.focus_set()
+                view.set_editable(True)
                 edit_btn.configure(text="Lock", fg_color="#6e2b28", hover_color="#8e3b38")
                 save_btn.pack(side="right", padx=(0, 4))
                 editing[0] = True
             else:
-                txt.configure(state="disabled")
+                view.set_editable(False)
                 ABAPHighlighter.apply(txt)
                 edit_btn.configure(text="Edit", fg_color="#3a3a3a", hover_color="#505050")
                 save_btn.pack_forget()
@@ -624,12 +608,14 @@ class App(ctk.CTk):
             if not original:
                 self.write_log(f"[WS] Original source for {prog} not in workspace — cannot diff.")
                 return
-            current = txt.get("0.0", "end-1c")
+            current = view.get()
             self.editor.close_tab(f"Diff: {prog}")
             self.open_diff_tab(f"Diff: {prog}", original, current, prog, profile)
 
         ctk.CTkButton(toolbar, text="Copy", width=70,
-                      command=lambda: self.copy_to_clipboard(txt.get("0.0", "end-1c"))).pack(side="right")
+                      command=lambda: self.copy_to_clipboard(view.get())).pack(side="right")
+        ctk.CTkButton(toolbar, text="Find  Ctrl+F", width=100, fg_color=T.PANEL_ALT,
+                      hover_color=T.BORDER, command=view.show_find).pack(side="right", padx=4)
         edit_btn.pack(side="right", padx=4)
         if is_proposal and prog:
             ctk.CTkButton(toolbar, text="Show Diff", width=90,
@@ -786,6 +772,9 @@ class App(ctk.CTk):
         if not entry:
             return
         self.editor.set_active(target)
+        if entry.get("view"):
+            entry["view"].goto(line)
+            return
         txt = entry["textbox"]
         txt.tag_remove("hl", "1.0", "end")
         txt.tag_config("hl", background="#4a4a00")
@@ -831,8 +820,13 @@ class App(ctk.CTk):
             self.after(0, self.write_log, f"[WS] Refresh error: {e}")
         self.after(0, self._ws_apply, data, git_st, branch, profile)
 
+    def filter_workspace_tree(self, text: str):
+        data, git_st, profile = self._ws_last
+        self._ws_build(data, git_st, profile, flt=text)
+
     def _ws_apply(self, data, git_st, branch, profile=""):
         try:
+            self._ws_last = (data, git_st, profile)
             self._ws_build(data, git_st, profile)
             self.explorer_panel.set_branch_label(branch)
             self._status_right.set(f"🌿 {branch}   ·   read-only RFC" if branch else "read-only RFC")
@@ -842,9 +836,12 @@ class App(ctk.CTk):
                 self._ws_refresh_pending = False
                 self.refresh_workspace_tree()
 
-    def _ws_build(self, data, git_st, profile=""):
+    def _ws_build(self, data, git_st, profile="", flt=None):
         tree  = self.ws_tree
         icons = getattr(self, "ws_icons", {})
+        if flt is None:
+            flt = self.explorer_panel.ws_filter.get() if hasattr(self.explorer_panel, "ws_filter") else ""
+        flt = (flt or "").strip().upper()
 
         # Remember collapsed/expanded state and scroll position
         open_state = {}
@@ -895,6 +892,9 @@ class App(ctk.CTk):
                                  values=("", profile, "", "", "", "_profile"),
                                  tags=(_tag(pst),) if _tag(pst) else (), **_img("profile"))
             for proj in sorted(projects):
+                if flt and not any(flt in f.upper() or flt in proj.upper()
+                                   for fl in projects[proj].values() for f in fl):
+                    continue
                 prst = proj_st.get(f"{profile}/{proj}", "")
                 proj_node = tree.insert(p_node, "end", text=f"{_prefix(prst)}{proj}",
                                         open=open_state.get(("_project", profile, proj, ""), True),
@@ -902,6 +902,8 @@ class App(ctk.CTk):
                                         tags=(_tag(prst),) if _tag(prst) else (), **_img("folder"))
                 for folder in workspace.FOLDERS:
                     fnames = projects[proj].get(folder, [])
+                    if flt:
+                        fnames = [f for f in fnames if flt in f.upper() or flt in proj.upper()]
                     if not fnames:
                         continue
                     kw = {"image": sub_icon[folder]} if sub_icon.get(folder) else {}
@@ -1172,6 +1174,27 @@ class App(ctk.CTk):
         self.editor.set_active(name)
         self.write_log(f"[Claude] {'Resumed' if session_id else 'New'} session {title} "
                        f"(cwd={cwd}, mcp={'yes' if session.has_mcp else 'no'})")
+
+    def proposal_from_code(self, code: str):
+        """Save a code block from the Claude tab as a proposal → diff tab opens via the watcher."""
+        profile = self.active_profile()
+        if not profile:
+            return
+        name = ""
+        for tab in reversed(list(self.tabs_dict)):
+            entry = self.tabs_dict[tab]
+            if entry.get("prog") and not str(tab).startswith(("Diff:", "Proposal:")):
+                name = entry["prog"]
+                break
+        name = name or self.current_main_program
+        m = re.search(r"^\s*(?:REPORT|PROGRAM|FUNCTION)\s+([\w/]+)", code, re.I | re.M)
+        if m:
+            name = m.group(1).upper()
+        name = askstring("Proposal", "Program name for this proposal:", initialvalue=name)
+        if not name:
+            return
+        path = workspace.write_proposal(profile, name.strip().upper(), code)
+        self.write_log(f"[Claude] Proposal written: {path}")
 
     def get_active_code_context(self) -> str:
         """Describe the active code tab for Claude (file path + inline code when small)."""

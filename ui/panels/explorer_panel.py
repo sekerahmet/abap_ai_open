@@ -13,6 +13,8 @@ Toolbar (Workspace tab):
 import customtkinter as ctk
 from tkinter import ttk
 
+from ui import theme as T
+
 
 def _apply_style(name: str, heading_color: str = "#9cdcfe"):
     s = ttk.Style()
@@ -115,12 +117,17 @@ class ExplorerPanel(ctk.CTkFrame):
     def _setup_sap_tree(self, parent):
         _apply_style("SAP.Treeview")
 
-        hdr = ctk.CTkFrame(parent, height=30, fg_color="#252526")
+        hdr = ctk.CTkFrame(parent, fg_color=T.PANEL_ALT, corner_radius=0)
         hdr.grid(row=0, column=0, sticky="ew")
-        self._sap_hdr_var = ctk.StringVar(value="  Discovered Objects")
-        ctk.CTkLabel(hdr, textvariable=self._sap_hdr_var,
+        hdr.grid_columnconfigure(0, weight=1)
+        self._sap_hdr_var = ctk.StringVar(value="Discovered Objects")
+        ctk.CTkLabel(hdr, textvariable=self._sap_hdr_var, anchor="w",
                      font=ctk.CTkFont(family="Segoe UI", size=11),
-                     text_color="#aaaaaa").pack(side="left", padx=6, pady=5)
+                     text_color=T.MUTED).grid(row=0, column=0, sticky="ew", padx=8, pady=(5, 2))
+        self.sap_filter = ctk.CTkEntry(hdr, placeholder_text="filter objects…", height=26,
+                                       font=ctk.CTkFont(size=11))
+        self.sap_filter.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
+        self.sap_filter.bind("<KeyRelease>", lambda _e: self.app.filter_sap_tree(self.sap_filter.get()))
 
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=1, column=0, sticky="nsew")
@@ -154,7 +161,7 @@ class ExplorerPanel(ctk.CTkFrame):
         }
 
     def set_sap_header(self, text: str):
-        self._sap_hdr_var.set(f"  {text}")
+        self._sap_hdr_var.set(text)
 
     # ── Workspace ─────────────────────────────────────────────────────────────
 
@@ -164,7 +171,7 @@ class ExplorerPanel(ctk.CTkFrame):
         self._ws_icons = _build_icons()          # keep a reference → prevents GC
         self.app.ws_icons = self._ws_icons
 
-        toolbar = ctk.CTkFrame(parent, fg_color="#252526", corner_radius=0)
+        toolbar = ctk.CTkFrame(parent, fg_color=T.PANEL_ALT, corner_radius=0)
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.grid_columnconfigure((0, 1), weight=1, uniform="tb")
 
@@ -185,8 +192,12 @@ class ExplorerPanel(ctk.CTkFrame):
         self._branch_var = ctk.StringVar(value="")
         ctk.CTkLabel(toolbar, textvariable=self._branch_var, anchor="w",
                      font=ctk.CTkFont(family="Segoe UI", size=11),
-                     text_color="#6a9955").grid(row=1, column=0, columnspan=3, sticky="ew",
-                                                padx=8, pady=(0, 4))
+                     text_color=T.GOOD).grid(row=1, column=0, columnspan=3, sticky="ew",
+                                             padx=8, pady=(0, 2))
+        self.ws_filter = ctk.CTkEntry(toolbar, placeholder_text="filter files…", height=26,
+                                      font=ctk.CTkFont(size=11))
+        self.ws_filter.grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 6))
+        self.ws_filter.bind("<KeyRelease>", lambda _e: self.app.filter_workspace_tree(self.ws_filter.get()))
 
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=1, column=0, sticky="nsew")

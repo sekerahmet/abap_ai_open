@@ -38,8 +38,10 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `main.spec` | PyInstaller spec (`console=False`, `debug=False`; flip `console=True` to see tracebacks) |
 | `mcp_server.py` | FastMCP server — read-only SAP RFC + workspace tools for Claude Desktop |
 | `ui/main_app.py` | `App(ctk.CTk)` — glue: profiles, threads, tabs, SAP-object tree, workspace explorer, proposal watcher, GitHub sync |
-| `ui/panels/sidebar.py` | `SidebarPanel` — connection profiles (dropdown + entries + Save), `CONN_FIELDS` |
-| `ui/panels/editor.py` | `EditorPanel` — fetch bar, horizontally scrollable tab bar, content area, `OBJECT_TYPES` |
+| `ui/theme.py` | colour / font / spacing constants used by every panel |
+| `ui/panels/topbar.py` | `TopBar` — profile chip + ⚙ (opens `ConnectionDialog`) + object type / name / Fetch / ✦ Claude; `CONN_FIELDS`, `OBJECT_TYPES` |
+| `ui/panels/editor.py` | `EditorPanel` — tab bar (glyph per tab type, scrollbar only on overflow) + content area |
+| `ui/widgets/codeview.py` | `CodeView` — tk.Text with line-number gutter, active-line highlight, Ctrl+F find bar |
 | `ui/panels/explorer_panel.py` | `ExplorerPanel` — SAP Objects tree + Workspace tree (git status, Push/Pull/Refresh, branch label) |
 | `ui/panels/claude_panel.py` | `ClaudePanel` — one Claude Code session per tab (transcript + input, resume menu) |
 | `core/claude_runner.py` | `ClaudeSession` — runs `claude -p --output-format stream-json` with the user's subscription login; MCP config discovery |
@@ -104,6 +106,10 @@ CLAS → CLASS, PROG → PROG, FUNC → FUNC); other TADIR types only jump.
 The loop is wrapped in try/finally so an error never stops polling.
 
 ### Claude Code tab (subscription, no API key)
+Transcript renders light markdown (headers, bold, inline code, bullets, fenced code with
+Copy / "Open as proposal" → `App.proposal_from_code`). Text streams raw and is re-rendered
+when the text block completes. Usage bars come from `rate_limit_event` and persist in
+`claude_usage.json`.
 `✦ Claude` opens `Claude: #n`. Each message = one `claude -p` subprocess (prompt on stdin,
 `--resume <session_id>` after the first turn, `--include-partial-messages` for streaming).
 cwd = `workspace/{profile}`; allowed tools = Read/Glob/Grep/LS + `mcp__<server>`; the MCP
@@ -114,9 +120,23 @@ path). Sessions are listed in `%APPDATA%\ABAP_AI\claude_sessions.json`. The Agen
 deliberately not used: Anthropic does not allow subscription auth through the SDK for
 third-party apps; the CLI in `-p` mode is fine for the user's own tooling.
 
+### Layout
+Row 0 `TopBar`, row 1 `tk.PanedWindow` (Editor | Explorer, draggable sash), row 2 status bar.
+Connection profiles are edited in `ConnectionDialog`; `App.get_current_conn()` reads the active
+profile from `systems_data` (there are no entry widgets on the main window any more).
+`App.save_profile(name, data)` / `delete_profile(name)` are the only write paths.
+
+### Code tabs
+`open_code_tab` builds a `CodeView`; `tabs_dict[name]` holds `view` (CodeView) and `textbox`
+(its tk.Text). `jump_to_line` uses `view.goto`. Highlighter runs on the tk.Text.
+
+### Filters
+Explorer filter boxes call `App.filter_sap_tree(text)` / `filter_workspace_tree(text)`, which
+re-render from the last data (`_tree_last`, `_ws_last`) without RFC or git.
+
 ### App context wiring
 Panels receive `app_context` (the `App`) and set widget references on it
-(`self.app.sap_ashost`, `self.app.tree`, `self.app.ws_tree`, `self.app.fetch_btn`).
+(`self.app.tree`, `self.app.ws_tree`, `self.app.fetch_btn`).
 
 ### .env
 All modules use `utils.env_loader.load_robust_env()`. `.env` is **not** bundled — copy it next

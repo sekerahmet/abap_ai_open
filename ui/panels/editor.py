@@ -1,15 +1,26 @@
 import customtkinter as ctk
 
-OBJECT_TYPES = ["Program", "Table", "Structure", "Function Module", "Global Class", "Table Data"]
+from ui import theme as T
+
+# glyph shown in front of the tab title, by title prefix
+_TAB_GLYPH = {
+    "Program": "📝", "Global Class": "💎", "Function Module": "⚙", "Table": "▦",
+    "Data": "▤", "Proposal": "📬", "Diff": "±", "Claude": "✦", "System Logs": "≡",
+}
+
+
+def _glyph(name: str) -> str:
+    prefix = name.split(":", 1)[0]
+    return _TAB_GLYPH.get(prefix, "")
 
 
 class EditorPanel(ctk.CTkFrame):
-    """Fetch bar + horizontally scrollable tab bar + content area."""
+    """Horizontally scrollable tab bar + content area (fetch controls live in TopBar)."""
 
     def __init__(self, parent, app_context):
         super().__init__(parent, corner_radius=0, fg_color="transparent")
         self.app = app_context
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
         self.tabs_dict = {}
@@ -17,67 +28,66 @@ class EditorPanel(ctk.CTkFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        # ── Object fetch header ───────────────────────────────────────────────
-        self.fetch_bar = ctk.CTkFrame(self, height=60)
-        self.fetch_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        self.fetch_bar.grid_columnconfigure(1, weight=1)
+        self.headers_bar = ctk.CTkScrollableFrame(self, orientation="horizontal", height=34,
+                                                  fg_color=T.PANEL, corner_radius=6)
+        self.headers_bar.grid(row=0, column=0, sticky="ew", padx=T.PAD, pady=(T.PAD, 0))
+        # hide the scrollbar unless the tabs overflow
+        try:
+            self._hbar_sb = self.headers_bar._scrollbar
+            self._hbar_canvas = self.headers_bar._parent_canvas
+            self.headers_bar.bind("<Configure>", lambda _e: self.after(10, self._update_tab_scrollbar))
+            self._hbar_canvas.bind("<Configure>", lambda _e: self.after(10, self._update_tab_scrollbar))
+        except AttributeError:
+            self._hbar_sb = None
 
-        self.type_menu = ctk.CTkOptionMenu(self.fetch_bar, values=OBJECT_TYPES, width=140, height=40)
-        self.type_menu.grid(row=0, column=0, padx=10)
-
-        self.name_entry = ctk.CTkEntry(self.fetch_bar, placeholder_text="Object Name...", height=40)
-        self.name_entry.grid(row=0, column=1, sticky="ew", padx=5)
-        self.name_entry.bind("<Return>", lambda _e: self.app.fetch_program_flow())
-
-        self.fetch_btn = ctk.CTkButton(self.fetch_bar, text="Fetch", width=100, height=40,
-                                       command=self.app.fetch_program_flow)
-        self.fetch_btn.grid(row=0, column=2, padx=(10, 4))
-        self.app.fetch_btn = self.fetch_btn
-
-        self.claude_btn = ctk.CTkButton(self.fetch_bar, text="✦ Claude", width=110, height=40,
-                                        fg_color="#5a3a8a", hover_color="#7a5aaa",
-                                        command=self.app.open_claude_tab)
-        self.claude_btn.grid(row=0, column=3, padx=(4, 10))
-
-        # ── Tab bar (scrolls horizontally when many tabs are open) ────────────
-        self.headers_bar = ctk.CTkScrollableFrame(self, orientation="horizontal", height=36,
-                                                  fg_color="#1E1E1E", corner_radius=6)
-        self.headers_bar.grid(row=1, column=0, sticky="ew", padx=10)
-
-        self.content_area = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a1b")
-        self.content_area.grid(row=2, column=0, sticky="nsew", padx=10, pady=(5, 10))
+        self.content_area = ctk.CTkFrame(self, corner_radius=8, fg_color=T.SURFACE)
+        self.content_area.grid(row=1, column=0, sticky="nsew", padx=T.PAD, pady=(4, T.PAD))
         self.content_area.grid_rowconfigure(0, weight=1)
         self.content_area.grid_columnconfigure(0, weight=1)
+
+    def _update_tab_scrollbar(self):
+        if not self._hbar_sb:
+            return
+        try:
+            need = self.headers_bar.winfo_reqwidth() > self._hbar_canvas.winfo_width() + 2
+            if need:
+                self._hbar_sb.grid()
+            else:
+                self._hbar_sb.grid_remove()
+        except Exception:
+            pass
 
     # ── Tab API ───────────────────────────────────────────────────────────────
 
     def add_tab(self, name, is_closable=True):
-        header = ctk.CTkFrame(self.headers_bar, fg_color="#2d2d2d", height=30, corner_radius=5)
-        header.pack(side="left", padx=2, pady=2)
+        header = ctk.CTkFrame(self.headers_bar, fg_color=T.PANEL_ALT, height=28, corner_radius=6)
+        header.pack(side="left", padx=2, pady=3)
 
-        lbl = ctk.CTkLabel(header, text=name, font=ctk.CTkFont(size=12))
+        g = _glyph(name)
+        lbl = ctk.CTkLabel(header, text=f"{g} {name}" if g else name, font=ctk.CTkFont(size=12))
         lbl.pack(side="left", padx=(10, 5))
         lbl.bind("<Button-1>", lambda _e: self.set_active(name))
         lbl.bind("<Button-2>", lambda _e: self.close_tab(name) if is_closable else None)
 
         if is_closable:
             ctk.CTkButton(header, text="✕", width=20, height=20, fg_color="transparent",
-                          hover_color="#8b3a36", command=lambda: self.close_tab(name)
+                          hover_color=T.DANGER_HOVER, command=lambda: self.close_tab(name)
                           ).pack(side="left", padx=(0, 5))
 
         content = ctk.CTkFrame(self.content_area, fg_color="transparent")
         self.tabs_dict[name] = {"header": header, "content": content}
+        self.after(30, self._update_tab_scrollbar)
         return content
 
     def set_active(self, name):
         if name not in self.tabs_dict:
             return
         if self.active_tab_name and self.active_tab_name in self.tabs_dict:
-            self.tabs_dict[self.active_tab_name]["header"].configure(fg_color="#2d2d2d")
+            self.tabs_dict[self.active_tab_name]["header"].configure(fg_color=T.PANEL_ALT)
             self.tabs_dict[self.active_tab_name]["content"].grid_forget()
 
         self.active_tab_name = name
-        self.tabs_dict[name]["header"].configure(fg_color="#347083")
+        self.tabs_dict[name]["header"].configure(fg_color=T.ACCENT)
         self.tabs_dict[name]["content"].grid(row=0, column=0, sticky="nsew")
         self.app.active_tab_name = name
 
@@ -88,6 +98,7 @@ class EditorPanel(ctk.CTkFrame):
         self.tabs_dict[name]["content"].destroy()
         del self.tabs_dict[name]
         self.app.tabs_dict.pop(name, None)
+        self.after(30, self._update_tab_scrollbar)
 
         if self.active_tab_name == name:
             self.active_tab_name = None
