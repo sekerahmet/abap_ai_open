@@ -194,13 +194,26 @@ class MessageBubble(QFrame):
         lbl = QLabel(f"⚙  {name} …")
         lbl.setStyleSheet(f"color: {T.MUTED}; font-family: {T.MONO}; font-size: 11px;")
         lbl.setProperty("tool", True)
+        lbl._name = name
         self._lay.addWidget(lbl)
+        if not hasattr(self, "_pending_tools"):
+            self._pending_tools = []
+        self._pending_tools.append(lbl)
         self._last_tool = lbl
 
-    def tool_done(self):
+    def tool_progress(self, nbytes: int):
+        """Streaming tool input (e.g. a long write_proposal): show how much has been generated."""
         lbl = getattr(self, "_last_tool", None)
-        if lbl and not lbl.text().endswith("✓"):
-            lbl.setText(lbl.text().rstrip(" …") + "  ✓")
+        if lbl:
+            size = f"{nbytes / 1024:.1f} KB" if nbytes >= 1024 else f"{nbytes} B"
+            lbl.setText(f"⚙  {lbl._name} …  writing {size}")
+
+    def tool_done(self):
+        """Mark the oldest still-running tool as finished (one call per tool_result)."""
+        pend = getattr(self, "_pending_tools", [])
+        if pend:
+            lbl = pend.pop(0)
+            lbl.setText(f"⚙  {lbl._name}  ✓")
 
     def add_meta(self, text: str):
         lbl = QLabel(text)

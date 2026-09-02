@@ -81,6 +81,7 @@ class ClaudeChatTab(QWidget):
         self._bubble = None
         self._streamed = False
         self._in_text = False
+        self._tool_bytes = self._tool_shown = 0
         self._build()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -285,6 +286,7 @@ class ClaudeChatTab(QWidget):
         self._bubble = self._add_bubble("ai")
         self._streamed = False
         self._in_text = False
+        self._tool_bytes = self._tool_shown = 0
         self._busy = True
         self.send_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -306,18 +308,25 @@ class ClaudeChatTab(QWidget):
                     b.finish_raw(); self._in_text = False
                     name = cb.get("name", "tool")
                     b.add_tool(name.split("__")[-1] if "__" in name else name)
+                    self._tool_bytes = self._tool_shown = 0
             elif et == "content_block_delta":
                 d = e.get("delta", {})
                 if d.get("type") == "text_delta":
                     b.append_raw(d.get("text", "")); self._streamed = True; self._in_text = True
+                elif d.get("type") == "input_json_delta":
+                    self._tool_bytes += len(d.get("partial_json", "").encode("utf-8"))
+                    if self._tool_bytes - self._tool_shown >= 512:
+                        self._tool_shown = self._tool_bytes
+                        b.tool_progress(self._tool_bytes)
             elif et == "content_block_stop":
                 if self._in_text:
                     b.finish_raw(); self._in_text = False
             self._scroll_bottom()
         elif t == "user":
             blocks = ev.get("message", {}).get("content", [])
-            if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in blocks):
-                b.tool_done()
+            for x in blocks:                      # one ✓ per tool_result (a turn may return several)
+                if isinstance(x, dict) and x.get("type") == "tool_result":
+                    b.tool_done()
         elif t == "rate_limit_event":
             self.app.usage_updated(self.session)
 

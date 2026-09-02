@@ -481,6 +481,10 @@ class MainWindow(QMainWindow):
             b_ref = QPushButton("Re-fetch from SAP"); b_ref.clicked.connect(lambda: self.refetch_object(name, prog, ftype))
             bar.addWidget(b_ref)
         if is_proposal and prog:
+            b_apply = QPushButton(f"Apply → {rel or prog}"); b_apply.setObjectName("ok")
+            b_apply.setToolTip("Write this proposal over the workspace file (never to SAP)")
+            b_apply.clicked.connect(lambda: self.apply_proposal(source_profile or self.active_profile(), prog, view.get(), rel))
+            bar.addWidget(b_apply)
             b_diff = QPushButton("Show diff"); b_diff.setObjectName("claude")
             def _diff():
                 profile = source_profile or self.active_profile()
@@ -545,6 +549,10 @@ class MainWindow(QMainWindow):
         b_open = QPushButton("Open proposal code"); b_open.setObjectName("claude")
         b_open.clicked.connect(lambda: self.open_code_tab(f"Proposal: {rel or prog}", proposed, prog, "Program", profile,
                                                           is_proposal=True, rel=rel))
+        b_apply = QPushButton("Apply proposal"); b_apply.setObjectName("ok")
+        b_apply.setToolTip("Overwrite the workspace file with the proposed code (never written to SAP)")
+        b_apply.clicked.connect(lambda: self.apply_proposal(profile or self.active_profile(), prog, proposed, rel))
+        bar.addWidget(b_apply)
         if rel:
             lbl = QLabel(rel); lbl.setObjectName("dim"); bar.addWidget(lbl)
         bar.addWidget(b_open)
@@ -859,6 +867,37 @@ class MainWindow(QMainWindow):
                 self._populate_tree_offline(profile, stem.upper(), ABAPParser.get_objects(content))
         else:
             self.open_code_tab(f"File: {rel}", content, stem.upper(), "File", profile, rel=rel, mode="plain")
+
+    def apply_proposal(self, profile: str, prog: str, code: str, rel=None):
+        """Write proposal code over the workspace copy of the target (free-form: rel; SAP-style: programs/)."""
+        if rel:
+            target = workspace.abs_rel(profile, rel)
+            shown = rel
+        else:
+            target = workspace.get_path(profile, "Program", prog)
+            shown = workspace.rel_of(profile, target)
+        exists = os.path.isfile(target)
+        msg = (f"Overwrite '{shown}' with the proposed code?" if exists else f"Create '{shown}' from the proposed code?")
+        if QMessageBox.question(self, "Apply proposal", msg + "\n\n(Only the local workspace changes — nothing is sent to SAP.)") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        if rel:
+            path = workspace.write_rel(profile, rel, code)
+        else:
+            path = workspace.save_code(profile, "Program", prog, code)
+            if not path:
+                QMessageBox.warning(self, "Apply proposal", f"{prog} is not a custom (Z/Y) object — not saved."); return
+        key = rel or prog
+        self.close_tab(f"Diff: {key}"); self.close_tab(f"Proposal: {key}")
+        self._close_tabs_under(profile, rel) if rel else self._close_tabs_for_files([f"{prog}.abap"])
+        self.write_log(f"[WS] Proposal applied → {path}")
+        self.refresh_workspace_tree()
+        if rel:
+            d, f = os.path.split(rel)
+            self.open_local_tree_file(profile, d, f)
+        else:
+            ftype = workspace.guess_ftype(code)
+            self.open_code_tab(_tab_name(ftype, prog), code, prog, ftype, profile)
 
     def _close_tabs_under(self, profile: str, rel_prefix: str):
         """Close every tab whose file is rel_prefix or lies inside that folder."""
