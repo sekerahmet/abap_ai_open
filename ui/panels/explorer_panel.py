@@ -164,26 +164,29 @@ class ExplorerPanel(ctk.CTkFrame):
         self._ws_icons = _build_icons()          # keep a reference → prevents GC
         self.app.ws_icons = self._ws_icons
 
-        toolbar = ctk.CTkFrame(parent, height=34, fg_color="#252526")
+        toolbar = ctk.CTkFrame(parent, fg_color="#252526", corner_radius=0)
         toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.grid_columnconfigure(3, weight=1)
+        toolbar.grid_columnconfigure((0, 1), weight=1, uniform="tb")
 
-        _btn = dict(height=24, width=80, border_width=1, border_color="#444",
+        _btn = dict(height=26, border_width=1, border_color="#444",
                     font=ctk.CTkFont(family="Segoe UI", size=11))
-
         ctk.CTkButton(toolbar, text="⬆  Push", fg_color="#1a3a1a", hover_color="#2a5a2a",
-                      command=self.app.github_push, **_btn).grid(row=0, column=0, padx=(6, 3), pady=5)
+                      command=self.app.github_push, **_btn).grid(row=0, column=0, sticky="ew",
+                                                                 padx=(6, 3), pady=(6, 3))
         ctk.CTkButton(toolbar, text="⬇  Pull", fg_color="#1a1a3a", hover_color="#2a2a5a",
-                      command=self.app.github_pull, **_btn).grid(row=0, column=1, padx=3, pady=5)
+                      command=self.app.github_pull, **_btn).grid(row=0, column=1, sticky="ew",
+                                                                 padx=(3, 3), pady=(6, 3))
         ctk.CTkButton(toolbar, text="⟳", fg_color="#2a2a2a", hover_color="#3c3c3c", width=34,
                       font=ctk.CTkFont(family="Segoe UI", size=13),
-                      border_width=1, border_color="#444", height=24,
-                      command=self.app.refresh_workspace_tree).grid(row=0, column=2, padx=3, pady=5)
+                      border_width=1, border_color="#444", height=26,
+                      command=self.app.refresh_workspace_tree).grid(row=0, column=2, padx=(3, 6),
+                                                                    pady=(6, 3))
 
         self._branch_var = ctk.StringVar(value="")
-        ctk.CTkLabel(toolbar, textvariable=self._branch_var,
+        ctk.CTkLabel(toolbar, textvariable=self._branch_var, anchor="w",
                      font=ctk.CTkFont(family="Segoe UI", size=11),
-                     text_color="#6a9955").grid(row=0, column=4, padx=(0, 10), sticky="e")
+                     text_color="#6a9955").grid(row=1, column=0, columnspan=3, sticky="ew",
+                                                padx=8, pady=(0, 4))
 
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=1, column=0, sticky="nsew")
@@ -217,4 +220,4 @@ class ExplorerPanel(ctk.CTkFrame):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_branch_label(self, branch: str):
-        self._branch_var.set(f"🌿  {branch}" if branch else "")
+        self._branch_var.set(f"🌿  {branch}" if branch else "🌿  (no git repo yet — Push to create)")

@@ -54,6 +54,23 @@ def _auth_args(token: str) -> list:
     return ["-c", "credential.helper=", "-c", f"http.extraheader=AUTHORIZATION: basic {b64}"]
 
 
+_AUTH_HINT = ("GitHub kimlik doğrulaması başarısız — GITHUB_TOKEN geçersiz, süresi dolmuş "
+              "veya repo yetkisi yok.\n"
+              "GitHub → Settings → Developer settings → Personal access tokens ile yeni bir "
+              "token oluşturup .env dosyasındaki GITHUB_TOKEN değerini güncelleyin "
+              "(classic: 'repo' scope; fine-grained: Contents = Read and write).")
+
+
+def _friendly(err: str) -> str:
+    low = err.lower()
+    if ("could not read username" in low or "authentication failed" in low
+            or "invalid username or password" in low or "403" in low or "401" in low):
+        return _AUTH_HINT + "\n\n" + err
+    if "could not resolve host" in low or "unable to access" in low:
+        return "GitHub'a ulaşılamıyor (ağ / proxy).\n\n" + err
+    return err
+
+
 def _scrub(text: str, token: str) -> str:
     if not text:
         return ""
@@ -96,6 +113,12 @@ def _ensure_repo(repo_url: str) -> tuple:
         if rc != 0:
             return False, f"git init failed: {err}"
         _run(["symbolic-ref", "HEAD", "refs/heads/main"], base)
+
+    cur, _, _ = _run(["rev-parse", "--abbrev-ref", "HEAD"], base)
+    if cur == "master":                        # repos created by older versions
+        _, _, has_main = _run(["rev-parse", "--verify", "-q", "refs/heads/main"], base)
+        if has_main != 0:
+            _run(["branch", "-m", "master", "main"], base)
 
     out, _, rc = _run(["remote", "get-url", "origin"], base)
     if rc != 0:
@@ -171,7 +194,7 @@ def push_workspace(profile: str, commit_msg: str = "") -> tuple:
             if "fetch first" in low or "rejected" in low or "non-fast-forward" in low:
                 return False, ("Remote'da yerelde olmayan commit'ler var.\n"
                                "Önce Pull yapın, sonra tekrar Push deneyin.\n\n" + err)
-            return False, f"git push failed: {err}"
+            return False, f"git push failed: {_friendly(err)}"
 
         if pending:
             return True, f"GitHub'a gönderildi: {repo}"
@@ -197,7 +220,7 @@ def pull_workspace(profile: str) -> tuple:
 
         _, err, rc = _run(["fetch", "origin"], base, token)
         if rc != 0:
-            return False, f"git fetch failed: {err}"
+            return False, f"git fetch failed: {_friendly(err)}"
 
         _, _, rc = _run(["rev-parse", "--verify", "-q", "origin/main"], base)
         if rc != 0:
@@ -254,3 +277,17 @@ def get_branch_name() -> str:
             return ""
         out, _, rc = _run(["rev-parse", "--abbrev-ref", "HEAD"], _WORKSPACE_ROOT)
         return out if rc == 0 else ""
+
+
+def check_remote_access() -> tuple:
+    """Read-only probe: can we reach and authenticate against GITHUB_REPO?"""
+    ok, msg = _check_env()
+    if not ok:
+        return False, msg
+    with _lock:
+        _, err, rc = _run(["ls-remote", "--exit-code", "-h", _repo()], os.getcwd(), _token())
+    if rc == 0:
+        return True, "GitHub bağlantısı ve token doğrulandı."
+    if rc == 2:
+        return True, "Repo erişilebilir (henüz branch yok)."
+    return False, _friendly(err)

@@ -37,7 +37,8 @@ ctk.set_default_color_theme("blue")
 # User data lives in AppData — survives rebuilds, --clean, uninstall/reinstall.
 _APP_DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ABAP_AI")
 os.makedirs(_APP_DATA_DIR, exist_ok=True)
-SYSTEMS_FILE = os.path.join(_APP_DATA_DIR, "systems.json")
+SYSTEMS_FILE  = os.path.join(_APP_DATA_DIR, "systems.json")
+UI_STATE_FILE = os.path.join(_APP_DATA_DIR, "ui_state.json")
 
 _CONN_KEYS   = [k for k, _, _ in CONN_FIELDS]
 _DDIC_TYPES  = ("Table", "Structure")
@@ -65,10 +66,12 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("ABAP AI IDE")
-        self.geometry("1600x900")
 
         self.controller = AnalysisController()
         self.systems_data = self.load_systems_file()
+        self._ui_state = self._load_ui_state()
+        self._apply_window_geometry()
+        self.minsize(1100, 650)
         self.tabs_dict = {}
         self.active_tab_name = None
         self.current_main_program = ""
@@ -80,12 +83,14 @@ class App(ctk.CTk):
 
         self._setup_layout()
 
-        self.sidebar = SidebarPanel(self, self)
-        self.sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
-        self.editor = EditorPanel(self, self)
-        self.editor.grid(row=0, column=1, sticky="nsew", padx=2)
-        self.explorer_panel = ExplorerPanel(self, self)
-        self.explorer_panel.grid(row=0, column=2, sticky="nsew", padx=(2, 0))
+        self.sidebar = SidebarPanel(self.paned, self)
+        self.editor = EditorPanel(self.paned, self)
+        self.explorer_panel = ExplorerPanel(self.paned, self)
+        self.paned.add(self.sidebar, minsize=250, width=self._ui_state.get("sidebar_w", 290),
+                       stretch="never")
+        self.paned.add(self.editor, minsize=480, stretch="always")
+        self.paned.add(self.explorer_panel, minsize=320,
+                       width=self._ui_state.get("explorer_w", 460), stretch="never")
 
         logs_content = self.editor.add_tab("System Logs", is_closable=False)
         self.logs_text = ctk.CTkTextbox(logs_content, font=("Consolas", 12), wrap="word")
@@ -102,12 +107,77 @@ class App(ctk.CTk):
         self._ws_snapshot = workspace.snapshot()
         self.refresh_workspace_tree()
         self.after(2000, self._poll_proposals)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── Layout / window state ─────────────────────────────────────────────────
 
     def _setup_layout(self):
         self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=0, minsize=270)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_columnconfigure(2, weight=0, minsize=420)
+        self.grid_columnconfigure(0, weight=1)
+        # Three resizable columns separated by draggable sashes
+        self.paned = tk.PanedWindow(self, orient="horizontal", sashwidth=5, sashpad=0,
+                                    sashrelief="flat", bg="#0f0f10", bd=0, opaqueresize=True)
+        self.paned.grid(row=0, column=0, sticky="nsew")
+
+        # Status bar
+        bar = ctk.CTkFrame(self, height=26, corner_radius=0, fg_color="#0e639c")
+        bar.grid(row=1, column=0, sticky="ew")
+        bar.grid_columnconfigure(1, weight=1)
+        self._status_conn = ctk.StringVar(value="No profile")
+        self._status_msg  = ctk.StringVar(value="Ready")
+        self._status_right = ctk.StringVar(value="read-only RFC")
+        f = ctk.CTkFont(family="Segoe UI", size=11)
+        ctk.CTkLabel(bar, textvariable=self._status_conn, font=f, text_color="#ffffff",
+                     anchor="w").grid(row=0, column=0, sticky="w", padx=(10, 20))
+        ctk.CTkLabel(bar, textvariable=self._status_msg, font=f, text_color="#e8e8e8",
+                     anchor="w").grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(bar, textvariable=self._status_right, font=f, text_color="#ffffff",
+                     anchor="e").grid(row=0, column=2, sticky="e", padx=(20, 10))
+
+    def _load_ui_state(self) -> dict:
+        try:
+            with open(UI_STATE_FILE, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    def _apply_window_geometry(self):
+        st = self._ui_state
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        geo = st.get("geometry")
+        if geo:
+            try:
+                w, h, x, y = (int(v) for v in geo.replace("x", "+").split("+"))
+                if w <= sw and h <= sh and -50 <= x < sw - 100 and -50 <= y < sh - 100:
+                    self.geometry(geo)
+                else:
+                    geo = None
+            except ValueError:
+                geo = None
+        if not geo:
+            w, h = min(1600, int(sw * 0.92)), min(950, int(sh * 0.88))
+            self.geometry(f"{w}x{h}+{(sw - w) // 2}+{max(0, (sh - h) // 2 - 20)}")
+        if st.get("zoomed"):
+            try:
+                self.state("zoomed")
+            except Exception:
+                pass
+
+    def _on_close(self):
+        try:
+            zoomed = self.state() == "zoomed"
+            st = {"zoomed": zoomed}
+            if not zoomed:
+                st["geometry"] = self.geometry()
+            else:
+                st["geometry"] = self._ui_state.get("geometry")
+            st["sidebar_w"]  = self.sidebar.winfo_width()
+            st["explorer_w"] = self.explorer_panel.winfo_width()
+            with open(UI_STATE_FILE, "w", encoding="utf-8") as fh:
+                json.dump(st, fh)
+        except Exception:
+            pass
+        self.destroy()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Connection profiles
@@ -148,6 +218,10 @@ class App(ctk.CTk):
         self.populate_tree({}, {}, header="Discovered Objects")
         if name in self.systems_data:
             self._seed_proposals(name)
+            host = self.systems_data[name].get("ashost", "")
+            self._status_conn.set(f"●  {name}   {host}")
+        else:
+            self._status_conn.set("○  No profile")
         self.write_log(f"Switched to profile: {name}")
 
     def save_current_system(self):
@@ -745,6 +819,7 @@ class App(ctk.CTk):
         try:
             self._ws_build(data, git_st)
             self.explorer_panel.set_branch_label(branch)
+            self._status_right.set(f"🌿 {branch}   ·   read-only RFC" if branch else "read-only RFC")
         finally:
             self._ws_refreshing = False
             if self._ws_refresh_pending:
