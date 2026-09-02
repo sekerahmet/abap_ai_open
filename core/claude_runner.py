@@ -135,6 +135,25 @@ def auth_info() -> dict:
     return info
 
 
+def format_reset(epoch) -> str:
+    """'resets in 2h 05m' style text for an epoch timestamp."""
+    import time
+    try:
+        secs = int(epoch) - int(time.time())
+    except (TypeError, ValueError):
+        return ""
+    if secs <= 0:
+        return "resets now"
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"resets in {d}d {h}h"
+    if h:
+        return f"resets in {h}h {m:02d}m"
+    return f"resets in {m}m"
+
+
 def billing_label() -> str:
     """Short text for the UI: how usage is paid for."""
     info = auth_info()
@@ -155,6 +174,7 @@ class ClaudeSession:
         self.session_id = session_id
         self.max_turns = max_turns
         self.total_cost = 0.0
+        self.usage = {}           # {"five_hour": (utilization, resets_at_epoch), "seven_day": …}
         self.mcp_path, self.mcp_name = write_mcp_config(profile)
         self._proc = None
 
@@ -215,6 +235,12 @@ class ClaudeSession:
                 sid = ev.get("session_id")
                 if sid:
                     self.session_id = sid
+                if ev.get("type") == "rate_limit_event":
+                    windows = (ev.get("rate_limit_info") or {}).get("unifiedWindows") or {}
+                    for key in ("five_hour", "seven_day"):
+                        w = windows.get(key)
+                        if isinstance(w, dict) and w.get("utilization") is not None:
+                            self.usage[key] = (float(w["utilization"]), w.get("resetsAt"))
                 if ev.get("type") == "result":
                     result = ev
                     try:

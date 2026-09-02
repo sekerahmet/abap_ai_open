@@ -9,7 +9,7 @@ rendered on the main thread via app.after(0, …).
 import threading
 import customtkinter as ctk
 
-from core.claude_runner import ClaudeSession, find_claude, auth_info, billing_label
+from core.claude_runner import ClaudeSession, find_claude, auth_info, billing_label, format_reset
 
 
 class ClaudePanel(ctk.CTkFrame):
@@ -52,8 +52,31 @@ class ClaudePanel(ctk.CTkFrame):
         self.resume_menu.set("Resume earlier session…")
         self.resume_menu.pack(side="right", padx=6)
 
+        # Usage bars (5-hour session window, 7-day window) — filled from rate_limit_event
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=0)
+        usage = ctk.CTkFrame(self, fg_color="#232324", corner_radius=6)
+        usage.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+        usage.grid_columnconfigure((1, 4), weight=1, uniform="u")
+        small = ctk.CTkFont(family="Segoe UI", size=11)
+        self._usage_vars = {}
+        self._usage_bars = {}
+        for col, key, label in ((0, "five_hour", "Session (5h)"), (3, "seven_day", "Weekly (7d)")):
+            ctk.CTkLabel(usage, text=label, font=small, text_color="#aaaaaa", width=88,
+                         anchor="w").grid(row=0, column=col, padx=(10, 4), pady=5)
+            bar = ctk.CTkProgressBar(usage, height=8, progress_color="#3b8ed0")
+            bar.set(0)
+            bar.grid(row=0, column=col + 1, sticky="ew", padx=4)
+            var = ctk.StringVar(value="—")
+            ctk.CTkLabel(usage, textvariable=var, font=small, text_color="#cccccc", width=150,
+                         anchor="w").grid(row=0, column=col + 2, padx=(4, 10))
+            self._usage_vars[key] = var
+            self._usage_bars[key] = bar
+        self._render_usage()
+
         self.out = ctk.CTkTextbox(self, font=("Consolas", 13), wrap="word", fg_color="#1a1a1b")
-        self.out.grid(row=1, column=0, sticky="nsew", padx=10, pady=2)
+        self.out.grid(row=2, column=0, sticky="nsew", padx=10, pady=2)
         self.out.tag_config("user",  foreground="#9cdcfe")
         self.out.tag_config("me",    foreground="#569cd6")
         self.out.tag_config("tool",  foreground="#8a8a8a")
@@ -62,7 +85,7 @@ class ClaudePanel(ctk.CTkFrame):
         self.out.configure(state="disabled")
 
         bottom = ctk.CTkFrame(self, fg_color="transparent")
-        bottom.grid(row=2, column=0, sticky="ew", padx=10, pady=(2, 8))
+        bottom.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 8))
         bottom.grid_columnconfigure(0, weight=1)
         self.inp = ctk.CTkTextbox(bottom, height=76, font=("Segoe UI", 13), wrap="word")
         self.inp.grid(row=0, column=0, sticky="ew")
@@ -89,6 +112,20 @@ class ClaudePanel(ctk.CTkFrame):
             if label.endswith(x["id"][:8]):
                 self.app.open_claude_tab(session_id=x["id"], title=x["title"])
                 return
+
+    def _render_usage(self):
+        for key, var in self._usage_vars.items():
+            info = self.session.usage.get(key)
+            bar = self._usage_bars[key]
+            if not info:
+                var.set("—")
+                bar.set(0)
+                continue
+            util, resets = info
+            pct = max(0.0, min(1.0, util))
+            bar.set(pct)
+            bar.configure(progress_color="#e06c75" if pct >= 0.9 else "#e5c07b" if pct >= 0.7 else "#3b8ed0")
+            var.set(f"{pct * 100:.0f}%   {format_reset(resets)}")
 
     def _subscription(self) -> bool:
         return auth_info().get("authMethod") == "claude.ai"
@@ -168,6 +205,8 @@ class ClaudePanel(ctk.CTkFrame):
             if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
                 self._append(" ✓\n", "tool")
                 self._last_block = "tool"
+        elif t == "rate_limit_event":
+            self._render_usage()
         elif t == "result":
             pass   # handled in _on_done
 
