@@ -1,7 +1,7 @@
 # ABAP AI IDE — Project Reference for Claude
 
 ## What This Is
-A desktop IDE built with Python + CustomTkinter that connects to SAP systems via RFC (pyrfc),
+A desktop IDE built with Python + PySide6 (Qt) that connects to SAP systems via RFC (pyrfc),
 fetches ABAP source code **read-only**, parses referenced objects, and displays a git-aware
 workspace explorer. Also exposes an MCP server so Claude Desktop can read the same objects
 via RFC + local workspace and drop code *proposals* into the workspace (shown as diffs).
