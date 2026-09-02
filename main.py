@@ -29,15 +29,28 @@ def _report(tb: str):
         print(tb, file=sys.stderr)
 
 
+def _icon_path() -> str:
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", "abap_ai.ico")
+
+
 def main():
     try:
         from PySide6.QtWidgets import QApplication
-        from PySide6.QtGui import QFont
+        from PySide6.QtGui import QFont, QIcon
         from ui import theme
         from ui.main_window import MainWindow
 
+        if sys.platform == "win32":        # own taskbar identity (icon / grouping) instead of python.exe's
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("sekerahmet.ABAP_AI_IDE")
+            except Exception:
+                pass
         app = QApplication(sys.argv)
         app.setApplicationName("ABAP AI IDE")
+        if os.path.isfile(_icon_path()):
+            app.setWindowIcon(QIcon(_icon_path()))
         app.setStyle("Fusion")
         app.setFont(QFont(theme.UI_FONT, 9))
         app.setStyleSheet(theme.QSS)

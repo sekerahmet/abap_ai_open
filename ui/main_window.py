@@ -1,7 +1,7 @@
 """
 MainWindow — the ABAP AI IDE (PySide6).
 
-Layout:  toolbar (profile · ⚙ · type · name · Fetch · Open file · Paste code · ✦ Claude)
+Layout:  toolbar (profile · ⚙ · type · name · Fetch · Open file · Paste code)
          left dock  = Claude (account, usage, sessions)
          centre     = tabs (System Logs, code, tables, data, diff, Claude chats)
          right dock = SAP Objects | Workspace
@@ -23,13 +23,14 @@ from PySide6.QtCore import Qt, QTimer, QByteArray, QSize
 from PySide6.QtGui import QKeySequence, QShortcut, QGuiApplication
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
                                QComboBox, QPushButton, QToolBar, QTabWidget, QDockWidget, QMessageBox,
-                               QPlainTextEdit, QInputDialog, QFileDialog, QApplication, QSizePolicy)
+                               QPlainTextEdit, QInputDialog, QFileDialog, QApplication, QSizePolicy,
+                               QToolButton, QCheckBox)
 
 from utils.env_loader import load_robust_env
 load_robust_env()
 
 from core.controller import AnalysisController
-from core.claude_runner import ClaudeSession, find_claude, auth_info
+from core.claude_runner import ClaudeSession, find_claude, auth_info, transcript_path
 from utils.parser import ABAPParser
 from utils import workspace
 from utils import github_sync
@@ -48,7 +49,9 @@ SYSTEMS_FILE = os.path.join(_APP_DATA_DIR, "systems.json")
 UI_STATE_FILE = os.path.join(_APP_DATA_DIR, "ui_state.json")
 CLAUDE_SESSIONS_FILE = os.path.join(_APP_DATA_DIR, "claude_sessions.json")
 
-LOCAL_PROFILE = "Local (no SAP)"
+LOCAL_PROFILE = workspace.LOCAL_PROFILE
+_ABAP_EXTS = (".abap", ".prog", ".clas", ".fugr", ".incl")
+_FILE_FILTER = "ABAP / text (*.abap *.txt *.prog *.clas *.fugr *.incl *.md *.json);;All files (*)"
 OBJECT_TYPES = ["Program", "Table", "Structure", "Function Module", "Global Class", "Table Data"]
 _CONN_KEYS = [k for k, _, _ in CONN_FIELDS]
 _DDIC_TYPES = ("Table", "Structure")
@@ -57,7 +60,7 @@ _TAB_PREFIXES = ("Program", "Global Class", "Function Module", "Table", "Proposa
 _CATEGORY_FTYPE = {"DICT": "Table", "CLASS": "Global Class", "PROG": "Program", "FUNC": "Function Module"}
 _CONTEXT_INLINE_LIMIT = 20000
 _TAB_GLYPH = {"Program": "▤", "Global Class": "◆", "Function Module": "ƒ", "Table": "▦", "Data": "▥",
-              "Proposal": "✉", "Diff": "±", "Claude": "✦", "System Logs": "≡"}
+              "Proposal": "✉", "Diff": "±", "Claude": "✦", "System Logs": "≡", "File": "▢"}
 
 
 def _tab_name(ftype: str, name: str) -> str:
@@ -131,19 +134,13 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         b_open = QPushButton("Open file…"); b_open.clicked.connect(self.open_local_file); tb.addWidget(b_open)
         b_paste = QPushButton("Paste code"); b_paste.clicked.connect(self.paste_code); tb.addWidget(b_paste)
-        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        tb.addWidget(spacer)
-        b_claude = QPushButton("✦ Claude"); b_claude.setObjectName("claude")
-        b_claude.clicked.connect(lambda: self.open_claude_tab())
-        tb.addWidget(b_claude)
         self._refill_profiles()
 
     def _build_center(self):
         self.tabw = QTabWidget()
-        self.tabw.setTabsClosable(True)
+        self.tabw.setTabsClosable(False)          # own ✕ buttons (see _add_tab) — the stock icon is invisible on dark themes
         self.tabw.setMovable(True)
         self.tabw.setDocumentMode(True)
-        self.tabw.tabCloseRequested.connect(self._close_tab_index)
         self.tabw.currentChanged.connect(lambda _i: None)
         self.setCentralWidget(self.tabw)
         self.logs = QPlainTextEdit(); self.logs.setReadOnly(True); self.logs.setObjectName("code")
@@ -162,6 +159,12 @@ class MainWindow(QMainWindow):
         self.ws_panel.open_file.connect(self.open_workspace_file)
         self.ws_panel.reveal.connect(self.reveal_in_explorer)
         self.ws_panel.delete.connect(self.delete_workspace_node)
+        self.ws_panel.open_root.connect(lambda: self.reveal_in_explorer(("_profile", self.active_profile(), "", "", "")))
+        self.ws_panel.new_folder.connect(self.ws_new_folder)
+        self.ws_panel.new_file.connect(self.ws_new_file)
+        self.ws_panel.import_here.connect(self.ws_import_here)
+        self.ws_panel.rename.connect(self.ws_rename)
+        self.ws_panel.files_dropped.connect(lambda d, paths: self._import_local_files(paths, d[2]))
         d2 = QDockWidget("WORKSPACE", self); d2.setObjectName("dock_ws"); d2.setWidget(self.ws_panel)
         for d in (d1, d2):
             d.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetClosable)
@@ -173,6 +176,7 @@ class MainWindow(QMainWindow):
         self.side.new_session.connect(lambda: self.open_claude_tab())
         self.side.open_session.connect(lambda sid, title: self.open_claude_tab(sid, title))
         self.side.forget_session.connect(self.forget_claude_session)
+        self.side.rename_session.connect(self.rename_claude_session)
         d3 = QDockWidget("CLAUDE", self); d3.setObjectName("dock_claude"); d3.setWidget(self.side)
         d3.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, d3)
@@ -319,8 +323,12 @@ class MainWindow(QMainWindow):
         glyph = _TAB_GLYPH.get(name.split(":", 1)[0], "")
         idx = self.tabw.addTab(widget, f"{glyph} {name}" if glyph else name)
         self.tabw.setTabToolTip(idx, name)
-        if not closable:
-            self.tabw.tabBar().setTabButton(idx, self.tabw.tabBar().ButtonPosition.RightSide, None)
+        if closable:
+            btn = QToolButton(); btn.setObjectName("tabclose"); btn.setText("✕")
+            btn.setFixedSize(18, 18); btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip("Close tab  (Ctrl+W)")
+            btn.clicked.connect(lambda _c=False, w=widget: self._close_tab_index(self.tabw.indexOf(w)))
+            self.tabw.tabBar().setTabButton(idx, self.tabw.tabBar().ButtonPosition.RightSide, btn)
         self.tabs[name] = {"widget": widget, "kind": kind, **meta}
         self.tabw.setCurrentIndex(idx)
         return widget
@@ -366,14 +374,18 @@ class MainWindow(QMainWindow):
                 self.close_tab(f"{prefix}: {stem}")
 
     # ── code tab ──────────────────────────────────────────────────────────────
-    def open_code_tab(self, name, code, prog=None, ftype=None, source_profile=None, is_proposal=False):
+    def open_code_tab(self, name, code, prog=None, ftype=None, source_profile=None, is_proposal=False,
+                      rel=None, mode="abap"):
+        """rel = profile-relative path of the file (free-form workspaces); for a proposal tab it is the
+        path of the *target* file (the proposal itself lives in <dir>/proposals/)."""
         if self.activate_tab(name):
             return
         page = QWidget()
         lay = QVBoxLayout(page); lay.setContentsMargins(8, 6, 8, 8); lay.setSpacing(6)
         bar = QHBoxLayout()
-        src = QLabel(source_profile or ""); src.setObjectName("dim"); bar.addWidget(src); bar.addStretch(1)
-        view = CodeView(code, mode="abap")
+        src = QLabel(f"{source_profile}  ·  {rel}" if rel else (source_profile or ""))
+        src.setObjectName("dim"); bar.addWidget(src); bar.addStretch(1)
+        view = CodeView(code, mode=mode)
         editing = {"on": False}
 
         def _save():
@@ -383,7 +395,15 @@ class MainWindow(QMainWindow):
             if not (profile and prog):
                 self.write_log("[WS] Nothing to save (no profile / object name).")
                 return
-            if is_proposal:
+            if rel and is_proposal:
+                path = workspace.write_proposal(profile, prog, current, path=rel)
+                self._mark_proposal_seen(profile, path)
+                self.close_tab(f"Diff: {rel}")
+                self.write_log(f"[WS] Proposal updated: {path}")
+            elif rel:
+                path = workspace.write_rel(profile, rel, current)
+                self.write_log(f"[WS] Saved: {path}")
+            elif is_proposal:
                 path = workspace.write_proposal(profile, prog, current)
                 self._mark_proposal_seen(profile, path)
                 self.close_tab(f"Diff: {prog}")
@@ -403,19 +423,23 @@ class MainWindow(QMainWindow):
             b_save.setVisible(editing["on"])
         b_edit.clicked.connect(_toggle)
 
-        if prog and ftype and not is_proposal and not self.is_local() and source_profile != LOCAL_PROFILE:
+        if prog and ftype and not is_proposal and not rel and not self.is_local() and source_profile != LOCAL_PROFILE:
             b_ref = QPushButton("Re-fetch from SAP"); b_ref.clicked.connect(lambda: self.refetch_object(name, prog, ftype))
             bar.addWidget(b_ref)
         if is_proposal and prog:
             b_diff = QPushButton("Show diff"); b_diff.setObjectName("claude")
             def _diff():
                 profile = source_profile or self.active_profile()
-                original = workspace.read_code(profile, "Program", prog) if profile else ""
+                if rel:
+                    original = workspace.read_rel(profile, rel)
+                else:
+                    original = workspace.read_code(profile, "Program", prog) if profile else ""
                 if not original:
-                    self.write_log(f"[WS] Original source for {prog} not in workspace — cannot diff.")
+                    self.write_log(f"[WS] Original source for {rel or prog} not in workspace — cannot diff.")
                     return
-                self.close_tab(f"Diff: {prog}")
-                self.open_diff_tab(f"Diff: {prog}", original, view.get(), prog, profile)
+                key = rel or prog
+                self.close_tab(f"Diff: {key}")
+                self.open_diff_tab(f"Diff: {key}", original, view.get(), prog, profile, rel=rel)
             b_diff.clicked.connect(_diff)
             bar.addWidget(b_diff)
         b_find = QPushButton("Find  Ctrl+F"); b_find.clicked.connect(view.show_find); bar.addWidget(b_find)
@@ -424,7 +448,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(bar)
         lay.addWidget(view, 1)
         self._add_tab(name, page, kind="code", view=view, code=code, prog=prog, ftype=ftype,
-                      source_profile=source_profile)
+                      source_profile=source_profile, rel=rel)
 
     def refetch_object(self, tab_name, prog, ftype):
         self.close_tab(tab_name)
@@ -457,7 +481,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(data_table(columns, rows), 1)
         self._add_tab(name, page, kind="data")
 
-    def open_diff_tab(self, name, original, proposed, prog, profile=None):
+    def open_diff_tab(self, name, original, proposed, prog, profile=None, rel=None):
         if self.activate_tab(name):
             return
         lines = list(difflib.unified_diff(original.splitlines(), proposed.splitlines(),
@@ -465,7 +489,10 @@ class MainWindow(QMainWindow):
         page = QWidget(); lay = QVBoxLayout(page); lay.setContentsMargins(8, 6, 8, 8)
         bar = QHBoxLayout()
         b_open = QPushButton("Open proposal code"); b_open.setObjectName("claude")
-        b_open.clicked.connect(lambda: self.open_code_tab(f"Proposal: {prog}", proposed, prog, "Program", profile, is_proposal=True))
+        b_open.clicked.connect(lambda: self.open_code_tab(f"Proposal: {rel or prog}", proposed, prog, "Program", profile,
+                                                          is_proposal=True, rel=rel))
+        if rel:
+            lbl = QLabel(rel); lbl.setObjectName("dim"); bar.addWidget(lbl)
         bar.addWidget(b_open)
         added = sum(1 for l in lines if l.startswith("+") and not l.startswith("+++"))
         removed = sum(1 for l in lines if l.startswith("-") and not l.startswith("---"))
@@ -473,7 +500,8 @@ class MainWindow(QMainWindow):
         lay.addLayout(bar)
         view = CodeView("\n".join(lines) if lines else "No differences — proposed code is identical to original.", mode="diff")
         lay.addWidget(view, 1)
-        self._add_tab(name, page, kind="diff", view=view, code=proposed, prog=prog, ftype="Program", source_profile=profile)
+        self._add_tab(name, page, kind="diff", view=view, code=proposed, prog=prog, ftype="Program",
+                      source_profile=profile, rel=rel)
 
     def jump_to_line(self, line: int):
         target = f"Program: {self.current_main_program}" if self.current_main_program else ""
@@ -689,8 +717,12 @@ class MainWindow(QMainWindow):
 
     # ── local files ───────────────────────────────────────────────────────────
     def open_local_file(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Open ABAP source", "",
-                                                "ABAP / text (*.abap *.txt *.prog *.clas *.fugr);;All files (*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Open ABAP source", "", _FILE_FILTER)
+        if not paths:
+            return
+        if self.is_local():
+            self._import_local_files(paths, self.ws_panel.selected_dir())
+            return
         for p in paths:
             try:
                 with open(p, "r", encoding="utf-8", errors="replace") as f:
@@ -701,9 +733,147 @@ class MainWindow(QMainWindow):
             self._import_code(name, code, workspace.guess_ftype(code))
 
     def paste_code(self):
-        dlg = PasteCodeDialog(self, default_name=self.current_main_program)
+        default = "" if self.is_local() else self.current_main_program
+        dlg = PasteCodeDialog(self, default_name=default)
         if dlg.exec() and dlg.result_name:
-            self._import_code(dlg.result_name, dlg.result_code, dlg.result_type)
+            if self.is_local():
+                fname = dlg.result_name if os.path.splitext(dlg.result_name)[1] else dlg.result_name + ".abap"
+                self._import_local_code(fname, dlg.result_code, self.ws_panel.selected_dir())
+            else:
+                self._import_code(dlg.result_name, dlg.result_code, dlg.result_type)
+
+    # free-form (Local) workspace ------------------------------------------------
+    def _import_local_files(self, paths, rel_dir: str):
+        profile = LOCAL_PROFILE
+        opened = None
+        for p in paths:
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as f:
+                    code = f.read()
+            except OSError as e:
+                self.write_log(f"[Local] Could not read {p}: {e}"); continue
+            fname = os.path.basename(p)
+            if not os.path.splitext(fname)[1]:
+                fname += ".abap"
+            if self._import_local_code(fname, code, rel_dir, open_after=False):
+                opened = (rel_dir, fname)
+        if opened:
+            self.open_local_tree_file(profile, *opened)
+
+    def _import_local_code(self, fname: str, code: str, rel_dir: str, open_after=True) -> bool:
+        profile = LOCAL_PROFILE
+        rel = f"{rel_dir}/{fname}" if rel_dir else fname
+        if os.path.exists(workspace.abs_rel(profile, rel)):
+            if QMessageBox.question(self, "Overwrite?", f"'{rel}' already exists in the workspace.\nOverwrite it?") \
+                    != QMessageBox.StandardButton.Yes:
+                return False
+        path = workspace.write_rel(profile, rel, code)
+        self.write_log(f"[Local] Imported → {path}")
+        self._close_tabs_under(profile, rel)
+        self.refresh_workspace_tree()
+        if open_after:
+            self.open_local_tree_file(profile, rel_dir, fname)
+        return True
+
+    def open_local_tree_file(self, profile: str, rel_dir: str, filename: str):
+        rel = f"{rel_dir}/{filename}" if rel_dir else filename
+        full = workspace.abs_rel(profile, rel)
+        if not os.path.isfile(full):
+            self.write_log(f"[WS] Not found: {rel}"); return
+        content = workspace.read_rel(profile, rel)
+        stem, ext = os.path.splitext(filename)
+        ext = ext.lower()
+        if os.path.basename(rel_dir) == workspace.PROP_FOLDER:            # a proposal → tab keyed by its target
+            parent = os.path.dirname(rel_dir).replace("\\", "/")
+            orig = workspace.find_original(profile, parent, filename)
+            target = workspace.rel_of(profile, orig) if orig else (f"{parent}/{filename}" if parent else filename)
+            self.open_code_tab(f"Proposal: {target}", content, stem.upper(), "Program", profile, is_proposal=True, rel=target)
+            return
+        if ext == ".json":
+            try:
+                data = json.loads(content)
+            except ValueError:
+                data = None
+            if isinstance(data, list) and data and isinstance(data[0], dict) and "Field" in data[0]:
+                self.open_ddic_tab(f"Table: {stem.upper()}", {"NAME": stem.upper(), "FIELDS": data}, "Table")
+                return
+        if ext in _ABAP_EXTS:
+            ftype = workspace.guess_ftype(content)
+            self.open_code_tab(f"{ftype}: {rel}", content, stem.upper(), ftype, profile, rel=rel)
+            if ftype == "Program":
+                self.current_main_program = rel                 # jump_to_line targets "Program: <rel>"
+                self._populate_tree_offline(profile, stem.upper(), ABAPParser.get_objects(content))
+        else:
+            self.open_code_tab(f"File: {rel}", content, stem.upper(), "File", profile, rel=rel, mode="plain")
+
+    def _close_tabs_under(self, profile: str, rel_prefix: str):
+        """Close every tab whose file is rel_prefix or lies inside that folder."""
+        for tab in list(self.tabs):
+            e = self.tabs[tab]
+            r = e.get("rel")
+            if r and (e.get("source_profile") or profile) == profile and (r == rel_prefix or r.startswith(rel_prefix + "/")):
+                self.close_tab(tab)
+
+    def ws_new_folder(self, vals):
+        profile, rel_dir = vals[1], vals[2]
+        name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
+        name = name.strip().strip("/\\") if ok else ""
+        if not name:
+            return
+        if re.search(r'[<>:"|?*]', name):
+            QMessageBox.warning(self, "New folder", "Folder names cannot contain  < > : \" | ? *"); return
+        rel = f"{rel_dir}/{name}" if rel_dir else name
+        os.makedirs(workspace.abs_rel(profile, rel), exist_ok=True)
+        self.write_log(f"[WS] Folder created: {rel}")
+        self.refresh_workspace_tree()
+
+    def ws_new_file(self, vals):
+        profile, rel_dir = vals[1], vals[2]
+        name, ok = QInputDialog.getText(self, "New file", "File name (e.g. ZREPORT.abap):")
+        name = name.strip().strip("/\\") if ok else ""
+        if not name:
+            return
+        if re.search(r'[<>:"|?*/\\]', name):
+            QMessageBox.warning(self, "New file", "Invalid file name."); return
+        if not os.path.splitext(name)[1]:
+            name += ".abap"
+        rel = f"{rel_dir}/{name}" if rel_dir else name
+        if os.path.exists(workspace.abs_rel(profile, rel)):
+            QMessageBox.warning(self, "New file", f"'{rel}' already exists."); return
+        stem, ext = os.path.splitext(name)
+        template = f"REPORT {stem.lower()}.\n\n" if ext.lower() == ".abap" else ""
+        workspace.write_rel(profile, rel, template)
+        self.write_log(f"[WS] File created: {rel}")
+        self.refresh_workspace_tree()
+        self.open_local_tree_file(profile, rel_dir, name)
+
+    def ws_import_here(self, vals):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import files into the workspace", "", _FILE_FILTER)
+        if paths:
+            self._import_local_files(paths, vals[2])
+
+    def ws_rename(self, vals):
+        kind, profile, rel_dir, fname, _ = vals
+        old_rel = rel_dir if kind == "_dir" else (f"{rel_dir}/{fname}" if rel_dir else fname)
+        old_name = os.path.basename(old_rel)
+        new, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        new = new.strip() if ok else ""
+        if not new or new == old_name:
+            return
+        if re.search(r'[<>:"|?*/\\]', new):
+            QMessageBox.warning(self, "Rename", "Invalid name."); return
+        parent = os.path.dirname(old_rel).replace("\\", "/")
+        new_rel = f"{parent}/{new}" if parent else new
+        src, dst = workspace.abs_rel(profile, old_rel), workspace.abs_rel(profile, new_rel)
+        if os.path.exists(dst):
+            QMessageBox.warning(self, "Rename", f"'{new_rel}' already exists."); return
+        self._close_tabs_under(profile, old_rel)
+        try:
+            os.rename(src, dst)
+        except OSError as e:
+            QMessageBox.critical(self, "Rename", str(e)); return
+        self.write_log(f"[WS] Renamed: {old_rel} → {new_rel}")
+        self.refresh_workspace_tree()
 
     def _import_code(self, name: str, code: str, ftype: str):
         profile = self.active_profile()
@@ -727,18 +897,24 @@ class MainWindow(QMainWindow):
         run_bg(self._ws_refresh_worker, self.active_profile())
 
     def _ws_refresh_worker(self, profile):
-        data, git_st, branch = {}, {}, ""
+        data, git_st, branch, tree = {}, {}, "", None
         try:
-            data = {profile: workspace.list_files(profile)} if profile else {}
+            if profile == LOCAL_PROFILE:
+                tree = workspace.list_tree(profile)
+            else:
+                data = {profile: workspace.list_files(profile)} if profile else {}
             git_st = github_sync.get_git_status()
             branch = github_sync.get_branch_name()
         except Exception as e:
             self.ui.call(self.write_log, f"[WS] Refresh error: {e}")
-        self.ui.call(self._ws_apply, data, git_st, branch, profile)
+        self.ui.call(self._ws_apply, data, git_st, branch, profile, tree)
 
-    def _ws_apply(self, data, git_st, branch, profile):
+    def _ws_apply(self, data, git_st, branch, profile, tree=None):
         try:
-            self.ws_panel.build(data, git_st, profile)
+            if tree is not None:
+                self.ws_panel.build_free(tree, git_st, profile)
+            else:
+                self.ws_panel.build(data, git_st, profile)
             self.ws_panel.set_branch(branch)
             self.st_right.setText(f"⎇ {branch}   ·   read-only RFC" if branch else "read-only RFC")
         finally:
@@ -749,6 +925,9 @@ class MainWindow(QMainWindow):
 
     def open_workspace_file(self, vals):
         kind, profile, folder, filename, project = vals
+        if kind == "lfile":
+            self.open_local_tree_file(profile, folder, filename)
+            return
         prog = os.path.splitext(filename)[0].upper()
         if folder == workspace.PROP_FOLDER:
             code = workspace.read_file(profile, folder, filename, project=project)
@@ -770,6 +949,10 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _ws_path(vals) -> str:
         kind, profile, folder, fname, proj = vals
+        if kind == "_dir":
+            return workspace.abs_rel(profile, folder)
+        if kind == "lfile":
+            return workspace.abs_rel(profile, f"{folder}/{fname}" if folder else fname)
         if kind == "_profile":
             return workspace.abs_path(profile)
         if kind == "_project":
@@ -794,7 +977,9 @@ class MainWindow(QMainWindow):
         kind, profile, folder, fname, proj = vals
         path = self._ws_path(vals)
         label = {"_profile": f"Delete entire profile folder '{profile}'?", "_project": f"Delete project '{proj}'?",
-                 "_folder": f"Delete '{proj} / {folder}' and its contents?"}.get(kind, f"Delete file '{fname}'?")
+                 "_folder": f"Delete '{proj} / {folder}' and its contents?",
+                 "_dir": f"Delete folder '{folder}' and everything inside it?",
+                 "lfile": f"Delete file '{folder + '/' if folder else ''}{fname}'?"}.get(kind, f"Delete file '{fname}'?")
         if not os.path.exists(path):
             self.write_log(f"[WS] Not found: {path}"); return
         if QMessageBox.question(self, "Delete", label) != QMessageBox.StandardButton.Yes:
@@ -811,6 +996,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Delete error", str(e)); return
         self._close_tabs_for_files(affected)
+        if kind in ("_dir", "lfile"):
+            self._close_tabs_under(profile, workspace.rel_of(profile, path))
         self.refresh_workspace_tree()
 
     # ── proposals ─────────────────────────────────────────────────────────────
@@ -820,8 +1007,8 @@ class MainWindow(QMainWindow):
 
     def _mark_proposal_seen(self, profile, path):
         try:
-            proj = os.path.basename(os.path.dirname(os.path.dirname(path)))
-            self._watched_proposals[f"{profile}/{proj}/{os.path.basename(path)}"] = os.stat(path).st_mtime_ns
+            parent = workspace.rel_of(profile, os.path.dirname(os.path.dirname(path)))
+            self._watched_proposals[f"{profile}/{parent}/{os.path.basename(path)}"] = os.stat(path).st_mtime_ns
         except OSError:
             pass
 
@@ -842,25 +1029,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.write_log(f"[WS] Poll error: {e}")
 
-    def _open_proposal(self, profile, project, fname):
+    def _open_proposal(self, profile, parent, fname):
+        """parent = folder owning the proposals/ dir ('ZFI_CO_003' SAP-style, 'sub/dir' or '' free-form)."""
         name = os.path.splitext(fname)[0].upper()
-        proposed = workspace.read_file(profile, workspace.PROP_FOLDER, fname, project=project)
+        prop_rel = "/".join(x for x in (parent, workspace.PROP_FOLDER, fname) if x)
+        proposed = workspace.read_rel(profile, prop_rel)
         if not proposed:
             return
-        original = ""
-        for prefix in _CODE_TYPES:
-            original = self.tabs.get(f"{prefix}: {name}", {}).get("code", "")
-            if original:
-                break
-        if not original:
-            original = (workspace.read_code(profile, "Program", name, project=project)
-                        or workspace.read_code(profile, "Program", name))
-        self.write_log(f"[WS] Proposal arrived: {project}/{fname}")
-        self.close_tab(f"Diff: {name}"); self.close_tab(f"Proposal: {name}")
-        if original:
-            self.open_diff_tab(f"Diff: {name}", original, proposed, name, profile)
+        orig_abs = workspace.find_original(profile, parent, fname)
+        sap_style = (profile != LOCAL_PROFILE and orig_abs
+                     and os.path.basename(os.path.dirname(orig_abs)) == workspace.SOURCE_FOLDER)
+        original, rel = "", None
+        if sap_style or (profile != LOCAL_PROFILE and not orig_abs):
+            key = name
+            for prefix in _CODE_TYPES:                       # prefer the open tab (may hold unsaved edits)
+                e = self.tabs.get(f"{prefix}: {name}", {})
+                original = e["view"].get() if e.get("view") and e.get("kind") == "code" else e.get("code", "")
+                if original:
+                    break
+            if not original and orig_abs:
+                with open(orig_abs, "r", encoding="utf-8", errors="replace") as f:
+                    original = f.read()
         else:
-            self.open_code_tab(f"Proposal: {name}", proposed, name, "Program", profile, is_proposal=True)
+            rel = workspace.rel_of(profile, orig_abs) if orig_abs else "/".join(x for x in (parent, fname) if x)
+            key = rel
+            for tab, e in self.tabs.items():
+                if e.get("rel") == rel and e.get("kind") == "code" and not tab.startswith(("Proposal:", "Diff:")):
+                    original = e["view"].get(); break
+            if not original and orig_abs:
+                original = workspace.read_rel(profile, rel)
+        self.write_log(f"[WS] Proposal arrived: {prop_rel}")
+        self.close_tab(f"Diff: {key}"); self.close_tab(f"Proposal: {key}")
+        if original:
+            self.open_diff_tab(f"Diff: {key}", original, proposed, name, profile, rel=rel)
+        else:
+            self.open_code_tab(f"Proposal: {key}", proposed, name, "Program", profile, is_proposal=True, rel=rel)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Claude
@@ -899,8 +1102,51 @@ class MainWindow(QMainWindow):
         self.side.set_sessions(self.list_claude_sessions(self.active_profile()))
 
     def forget_claude_session(self, session_id: str):
-        self._save_claude_sessions([x for x in self._load_claude_sessions() if x.get("id") != session_id])
+        items = self._load_claude_sessions()
+        entry = next((x for x in items if x.get("id") == session_id), None) or {}
+        title = entry.get("title") or session_id[:8]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question); box.setWindowTitle("Delete session")
+        box.setText(f"Delete session '{title}' from the list?")
+        cb = QCheckBox("Also delete Claude Code's transcript file (the chat can no longer be resumed)")
+        box.setCheckBox(cb)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        for tab, e in list(self.tabs.items()):
+            if e.get("kind") == "claude" and e["widget"].session.session_id == session_id:
+                self.close_tab(tab)
+        if cb.isChecked():
+            cwd = workspace.abs_path(entry.get("profile") or self.active_profile())
+            path = transcript_path(cwd, session_id)
+            try:
+                if path:
+                    os.remove(path)
+                    self.write_log(f"[Claude] Transcript deleted: {path}")
+            except OSError as e:
+                self.write_log(f"[Claude] Could not delete transcript: {e}")
+        self._save_claude_sessions([x for x in items if x.get("id") != session_id])
         self.side.set_sessions(self.list_claude_sessions(self.active_profile()))
+        self.write_log(f"[Claude] Session removed: {title}")
+
+    def rename_claude_session(self, session_id: str, title: str):
+        items = self._load_claude_sessions()
+        for x in items:
+            if x.get("id") == session_id:
+                x["title"] = title
+        self._save_claude_sessions(items)
+        self.side.set_sessions(self.list_claude_sessions(self.active_profile()))
+        for tab, e in list(self.tabs.items()):
+            if e.get("kind") == "claude" and e["widget"].session.session_id == session_id:
+                new_name = f"Claude: {title}"
+                if new_name in self.tabs:
+                    break
+                self.tabs[new_name] = self.tabs.pop(tab)
+                idx = self.tabw.indexOf(e["widget"])
+                self.tabw.setTabText(idx, f"{_TAB_GLYPH['Claude']} {new_name}"); self.tabw.setTabToolTip(idx, new_name)
+                e["widget"].title = title
+                break
 
     def is_subscription(self) -> bool:
         return auth_info().get("authMethod") == "claude.ai"
@@ -959,10 +1205,18 @@ class MainWindow(QMainWindow):
         code = entry.get("code", "")
         if entry.get("view") and entry.get("kind") == "code":
             code = entry["view"].get()
-        folder = workspace.PROP_FOLDER if name.startswith("Proposal:") else workspace.SOURCE_FOLDER
-        proj = workspace.find_project(profile, folder, f"{prog}.abap") or prog
-        ctx = (f"[IDE context] The user has '{name}' open ({ftype} {prog}, profile {profile}). "
-               f"Cached file relative to the working directory: {proj}/{folder}/{prog}.abap")
+        rel = entry.get("rel")
+        if rel:
+            shown = workspace.proposal_rel(rel) if name.startswith("Proposal:") else rel
+            ctx = (f"[IDE context] The user has '{name}' open (profile {profile}). "
+                   f"File relative to the working directory: {shown}. "
+                   f"A proposal for it belongs to {workspace.proposal_rel(rel)} "
+                   f"(write_proposal(..., path='{rel}')).")
+        else:
+            folder = workspace.PROP_FOLDER if name.startswith("Proposal:") else workspace.SOURCE_FOLDER
+            proj = workspace.find_project(profile, folder, f"{prog}.abap") or prog
+            ctx = (f"[IDE context] The user has '{name}' open ({ftype} {prog}, profile {profile}). "
+                   f"Cached file relative to the working directory: {proj}/{folder}/{prog}.abap")
         if code and len(code) <= _CONTEXT_INLINE_LIMIT:
             ctx += f"\nCurrent content:\n```abap\n{code}\n```"
         elif code:
@@ -975,6 +1229,14 @@ class MainWindow(QMainWindow):
         for tab in reversed(list(self.tabs)):
             e = self.tabs[tab]
             if e.get("prog") and not tab.startswith(("Diff:", "Proposal:")):
+                if e.get("rel"):                       # free-form file → proposal next to it
+                    rel, ok = QInputDialog.getText(self, "Proposal", "Proposal for file (workspace-relative path):",
+                                                   text=e["rel"])
+                    if not ok or not rel.strip():
+                        return
+                    path = workspace.write_proposal(profile, e["prog"], code, path=rel.strip())
+                    self.write_log(f"[Claude] Proposal written: {path}")
+                    return
                 name = e["prog"]; break
         name = name or self.current_main_program
         m = re.search(r"^\s*(?:REPORT|PROGRAM|FUNCTION)\s+([\w/]+)", code, re.I | re.M)

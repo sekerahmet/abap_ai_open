@@ -12,6 +12,11 @@ Folder layout:
 Only custom objects (Z* / Y* prefix) are saved.
 Standard SAP objects are fetched for display but never written to disk.
 
+Free-form workspaces (the "Local (no SAP)" profile): the user organises any folder
+tree under workspace/{profile}/ themselves.  A proposal for <dir>/X.abap lives in
+<dir>/proposals/X.abap — the same rule that puts <PROJECT>/proposals/X.abap next to
+<PROJECT>/programs/X.abap for SAP profiles.
+
 Location rule: if a file already exists under ANY project of the profile, that
 location wins.  This keeps includes and tables under the main program that first
 discovered them instead of creating duplicates on Save / Re-fetch.
@@ -26,12 +31,15 @@ _WORKSPACE_ROOT = os.path.join(
     "ABAP_AI", "workspace"
 )
 
+LOCAL_PROFILE = "Local (no SAP)"      # free-form workspace, no RFC
+
 SOURCE_FOLDER = "programs"
 TABLE_FOLDER  = "tables"
 PROP_FOLDER   = "proposals"
 FOLDERS       = (SOURCE_FOLDER, TABLE_FOLDER, PROP_FOLDER)
 
 _DDIC_TYPES = ("TABL", "VIEW", "Table", "Structure")
+_HIDDEN_DIRS = (".git", "_attachments")
 
 
 def root() -> str:
@@ -65,6 +73,18 @@ def abs_path(profile: str, project: str = "", folder: str = "", filename: str = 
     """Absolute path for any node level (profile / project / folder / file)."""
     parts = [p for p in (profile, project, folder, filename) if p]
     return os.path.join(_WORKSPACE_ROOT, *parts)
+
+
+def abs_rel(profile: str, rel: str = "") -> str:
+    """Absolute path of a profile-relative path ('sub/dir/X.abap', '/' or '\\' separated)."""
+    parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."] if rel else []
+    return os.path.join(_WORKSPACE_ROOT, profile, *parts)
+
+
+def rel_of(profile: str, path: str) -> str:
+    """Profile-relative, '/'-separated form of an absolute workspace path."""
+    r = os.path.relpath(path, abs_path(profile)).replace("\\", "/")
+    return "" if r == "." else r
 
 
 def find_project(profile: str, folder: str, filename: str):
@@ -119,11 +139,19 @@ def save_table(profile: str, name: str, fields: list, project: str = None) -> st
     return path
 
 
-def write_proposal(profile: str, name: str, code: str, project: str = None) -> str:
+def write_proposal(profile: str, name: str, code: str, project: str = None, path: str = None) -> str:
     """
-    Write an AI proposal.  Location: existing proposal → project that holds the
-    program source → explicit project → own folder.
+    Write an AI proposal.
+    path given  → proposal for that profile-relative file: <dir>/proposals/<file>
+                  ('<P>/programs/X.abap' and '<P>/proposals/X.abap' both map to '<P>/proposals/X.abap')
+    otherwise   → existing proposal → project that holds the program source → explicit project → own folder.
     """
+    if path:
+        full = abs_rel(profile, proposal_rel(path))
+        _ensure(full)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(code)
+        return full
     fname = _filename("PROP", name)
     proj = (find_project(profile, PROP_FOLDER, fname)
             or find_project(profile, SOURCE_FOLDER, fname)
@@ -133,6 +161,51 @@ def write_proposal(profile: str, name: str, code: str, project: str = None) -> s
     with open(path, "w", encoding="utf-8") as f:
         f.write(code)
     return path
+
+
+def write_rel(profile: str, rel: str, content: str) -> str:
+    """Write any profile-relative file (free-form workspaces). Returns the absolute path."""
+    full = abs_rel(profile, rel)
+    _ensure(full)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(content)
+    return full
+
+
+def read_rel(profile: str, rel: str) -> str:
+    full = abs_rel(profile, rel)
+    if not os.path.isfile(full):
+        return ""
+    with open(full, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def proposal_rel(rel: str) -> str:
+    """'sub/X.abap' → 'sub/proposals/X.abap'; '<P>/programs/X.abap' → '<P>/proposals/X.abap'."""
+    d, fname = os.path.split(rel.replace("\\", "/").strip("/"))
+    if os.path.basename(d) in (PROP_FOLDER, SOURCE_FOLDER):
+        d = os.path.dirname(d)
+    return "/".join(x for x in (d, PROP_FOLDER, fname) if x)
+
+
+def find_original(profile: str, parent_rel: str, filename: str) -> str:
+    """
+    Absolute path of the file a proposal at <parent_rel>/proposals/<filename> refers to, or ''.
+    Order: <parent>/programs/<f>  →  <parent>/<f>  →  any <PROJECT>/programs/<f>  →  any folder.
+    """
+    parent = abs_rel(profile, parent_rel)
+    for cand in (os.path.join(parent, SOURCE_FOLDER, filename), os.path.join(parent, filename)):
+        if os.path.isfile(cand):
+            return cand
+    proj = find_project(profile, SOURCE_FOLDER, filename)
+    if proj:
+        return os.path.join(_WORKSPACE_ROOT, profile, proj, SOURCE_FOLDER, filename)
+    base = abs_path(profile)
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS and d != PROP_FOLDER]
+        if filename in filenames:
+            return os.path.join(dirpath, filename)
+    return ""
 
 
 def delete_path(path: str):
@@ -230,23 +303,60 @@ def list_profiles() -> list:
 
 
 def scan_proposals(profile: str) -> list:
-    """[(project, filename, mtime_ns), …] across all project folders."""
+    """
+    [(parent_rel, filename, mtime_ns), …] for every proposals/ folder anywhere under the
+    profile.  parent_rel is the '/'-separated folder that owns the proposals/ dir
+    ('ZFI_CO_003' for SAP-style projects, 'sub/dir' or '' for free-form workspaces).
+    """
     base = os.path.join(_WORKSPACE_ROOT, profile)
     if not os.path.isdir(base):
         return []
     found = []
-    for proj in sorted(os.listdir(base)):
-        prop_dir = os.path.join(base, proj, PROP_FOLDER)
-        if not os.path.isdir(prop_dir):
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
+        if os.path.basename(dirpath) != PROP_FOLDER:
             continue
-        for f in sorted(os.listdir(prop_dir)):
-            p = os.path.join(prop_dir, f)
-            if os.path.isfile(p):
-                try:
-                    found.append((proj, f, os.stat(p).st_mtime_ns))
-                except OSError:
-                    pass
+        parent = rel_of(profile, os.path.dirname(dirpath))
+        for f in sorted(filenames):
+            try:
+                found.append((parent, f, os.stat(os.path.join(dirpath, f)).st_mtime_ns))
+            except OSError:
+                pass
     return found
+
+
+def list_tree(profile: str) -> dict:
+    """Free-form directory tree: {"dirs": {name: subtree}, "files": [names]} (.git / _attachments hidden)."""
+    def walk(d):
+        node = {"dirs": {}, "files": []}
+        try:
+            entries = sorted(os.listdir(d), key=str.lower)
+        except OSError:
+            return node
+        for e in entries:
+            q = os.path.join(d, e)
+            if os.path.isdir(q):
+                if e in _HIDDEN_DIRS or e.startswith("."):
+                    continue
+                node["dirs"][e] = walk(q)
+            else:
+                node["files"].append(e)
+        return node
+    base = abs_path(profile)
+    return walk(base) if os.path.isdir(base) else {"dirs": {}, "files": []}
+
+
+def list_all_files(profile: str) -> list:
+    """Every file under the profile as a profile-relative '/' path (sorted; .git / _attachments hidden)."""
+    base = abs_path(profile)
+    out = []
+    if not os.path.isdir(base):
+        return out
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS and not d.startswith(".")]
+        for f in filenames:
+            out.append(rel_of(profile, os.path.join(dirpath, f)))
+    return sorted(out, key=str.lower)
 
 
 def snapshot() -> tuple:
@@ -255,7 +365,7 @@ def snapshot() -> tuple:
         return ()
     items = []
     for dirpath, dirnames, filenames in os.walk(_WORKSPACE_ROOT):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
+        dirnames[:] = [d for d in dirnames if d not in _HIDDEN_DIRS]
         for f in filenames:
             p = os.path.join(dirpath, f)
             try:

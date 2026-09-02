@@ -5,8 +5,9 @@ Claude side panel (left dock): account & usage, session manager.
 import time
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar,
-                               QListWidget, QListWidgetItem, QLineEdit, QFrame)
+                               QListWidget, QListWidgetItem, QLineEdit, QFrame, QMenu, QInputDialog)
 
 from core.claude_runner import auth_info, load_usage, format_reset, USAGE_WINDOWS, find_claude
 
@@ -40,7 +41,8 @@ class UsageRow(QWidget):
 class ClaudeSidePanel(QWidget):
     new_session = Signal()
     open_session = Signal(str, str)      # session_id, title
-    forget_session = Signal(str)         # session_id
+    forget_session = Signal(str)         # session_id  (delete from the list, with confirmation)
+    rename_session = Signal(str, str)    # session_id, new title
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,10 +76,18 @@ class ClaudeSidePanel(QWidget):
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(self._open)
         self.list.itemActivated.connect(self._open)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
+        self.list.setToolTip("Double-click: open · Right-click: rename / delete · Del: delete")
+        QShortcut(QKeySequence.StandardKey.Delete, self.list, activated=self._forget)
         lay.addWidget(self.list, 1)
-        b_forget = QPushButton("Forget selected"); b_forget.setObjectName("flat")
+        row = QHBoxLayout()
+        hint = QLabel("double-click opens · right-click for more"); hint.setObjectName("dim")
+        b_forget = QPushButton("🗑  Delete"); b_forget.setObjectName("flat")
+        b_forget.setToolTip("Delete the selected session from this list (Del)")
         b_forget.clicked.connect(self._forget)
-        lay.addWidget(b_forget, 0, Qt.AlignmentFlag.AlignRight)
+        row.addWidget(hint); row.addStretch(1); row.addWidget(b_forget)
+        lay.addLayout(row)
         self.refresh_account()
 
     # ── account / usage ───────────────────────────────────────────────────────
@@ -140,3 +150,24 @@ class ClaudeSidePanel(QWidget):
         s = it.data(Qt.ItemDataRole.UserRole) if it else None
         if s:
             self.forget_session.emit(s["id"])
+
+    def _rename(self):
+        it = self.list.currentItem()
+        s = it.data(Qt.ItemDataRole.UserRole) if it else None
+        if not s:
+            return
+        title, ok = QInputDialog.getText(self, "Rename session", "Title:", text=s.get("title", ""))
+        if ok and title.strip():
+            self.rename_session.emit(s["id"], title.strip())
+
+    def _menu(self, pos):
+        it = self.list.itemAt(pos)
+        if not it:
+            return
+        self.list.setCurrentItem(it)
+        menu = QMenu(self)
+        a = QAction("Open", menu); a.triggered.connect(lambda: self._open(it)); menu.addAction(a)
+        a = QAction("Rename…", menu); a.triggered.connect(self._rename); menu.addAction(a)
+        menu.addSeparator()
+        a = QAction("Delete…", menu); a.triggered.connect(self._forget); menu.addAction(a)
+        menu.exec(self.list.viewport().mapToGlobal(pos))

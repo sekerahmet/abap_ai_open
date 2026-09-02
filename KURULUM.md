@@ -48,13 +48,14 @@ Token: GitHub → Settings → Developer settings → Personal access tokens →
 Repository access: sadece o repo → Permissions: **Contents: Read and write**.
 `.env` yoksa Push/Pull dışında her şey çalışır. Token'ı kimseyle paylaşma.
 
-## 5. İsteğe bağlı: Claude sekmesi (✦ Claude)
+## 5. İsteğe bağlı: Claude sekmesi
 
 Claude Pro/Max aboneliğiyle çalışır, API anahtarı gerekmez.
 
 1. PowerShell aç: `winget install --id Anthropic.ClaudeCode -e`
 2. Yeni bir PowerShell aç, `claude` yaz, aboneliğinle tarayıcıdan giriş yap, `/exit`.
-3. IDE'de **✦ Claude** → sekme açılır. Claude workspace'teki önbellek dosyalarını okuyabilir.
+3. IDE'de soldaki CLAUDE panelinde **+ New session** → sekme açılır. Claude workspace'teki
+   dosyaları okuyabilir. Oturum listesinde sağ tık: yeniden adlandır / sil.
 
 Claude'un SAP'ye de canlı erişmesi (MCP araçları) için Python tarafı gerekir:
 
@@ -72,3 +73,20 @@ Claude'un SAP'ye de canlı erişmesi (MCP araçları) için Python tarafı gerek
 | "Name or password is incorrect" | Profildeki kullanıcı/şifre/client yanlış |
 | Push: "token geçersiz" | `.env` içindeki GITHUB_TOKEN süresi dolmuş, yenile |
 | Claude: "CLI not found" | 5. adım; kurulumdan sonra IDE'yi yeniden aç |
+
+## 6. SAP olmadan çalışmak: "Local (no SAP)" profili
+
+Profil kutusundan **Local (no SAP)** seçince WORKSPACE paneli serbest bir klasör ağacına dönüşür:
+`%APPDATA%\ABAP_AI\workspace\Local (no SAP)\`. Burayı istediğin gibi düzenle:
+
+- Sağ tık → **New folder / New file / Import files here / Rename / Delete**, ya da dosyaları
+  ağacın üstüne sürükle-bırak, ya da 📂 ile Explorer'da açıp elle düzenle (2 sn içinde yenilenir).
+- **Open file…** / **Paste code** seçili klasöre ekler.
+- Her dosya çift tıkla açılır; Edit → Save aynı dosyaya yazar.
+- Claude'a bir dosyayı düzeltmesini söylersen öneriyi **aynı klasördeki `proposals/`** altına
+  yazar (ör. `reports/ZFI_X.abap` → `reports/proposals/ZFI_X.abap`); IDE otomatik olarak
+  Diff sekmesi açar. Öneriyi beğenirsen Diff → "Open proposal code" → Copy ile kendin uygularsın;
+  dosyalarına Claude hiçbir zaman doğrudan yazmaz.
+- Bu profil için SAP bağlantısı, DLL ya da `.env` gerekmez (Claude için yine Claude Code CLI
+  ve `write_proposal` için MCP sunucusu = Python kurulumu gerekir; yoksa Claude kodu mesajda
+  verir, "Open as proposal" ile aynı yere yazılır).

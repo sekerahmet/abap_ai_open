@@ -18,11 +18,13 @@ letting Claude (via MCP) analyse that code and propose changes as reviewable dif
   *Open / Show in Windows Explorer / Delete*
 - Proposal watcher: when Claude writes a proposal through the MCP server, a diff tab opens
   automatically
-- **Claude Code inside the IDE**: `✦ Claude` opens a session tab that runs the Claude Code CLI
+- **Claude Code inside the IDE**: "+ New session" opens a session tab that runs the Claude Code CLI
   with your own subscription login (no API key). It sees the workspace files, the open code tab,
   and the SAP MCP tools; code suggestions come back as proposals / diff tabs
-- **Local mode**: pick "Local (no SAP)" and use *Open file…* / *Paste code* to work on ABAP
-  sources without any SAP system
+- **Local mode**: pick "Local (no SAP)" and the Workspace panel becomes a free-form folder tree
+  you organise yourself (new folder / file, import, rename, drag-drop, or plain Explorer). Ask
+  Claude to fix a file and the proposal lands in `<that folder>/proposals/` as a diff tab —
+  no SAP system, DLLs or `.env` needed
 - Dockable panels (Claude · SAP Objects · Workspace), tabs, dark theme; layout is remembered
 - Single-file `.exe` build with PyInstaller; all user data lives in `%APPDATA%\ABAP_AI`
 

@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import copy_metadata
 
 datas = []
 datas += copy_metadata('pyrfc')
+datas += [('assets/abap_ai.ico', 'assets')]
 # NOTE: .env is NOT bundled (contains secrets).
 # After build, copy .env next to dist/main.exe manually.
 
@@ -41,4 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/abap_ai.ico',
 )

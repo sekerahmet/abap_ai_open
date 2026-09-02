@@ -81,10 +81,14 @@ Includes and discovered Z*/Y* tables are saved under the **main program's** proj
 | `read_code` | `(profile, ftype, name, project=None)` | Load ABAP source; `""` if not found |
 | `read_table_fields` | `(profile, name, project=None)` | Load JSON field list from `tables/`; `[]` if not found |
 | `read_file` | `(profile, folder, filename, project=None)` | Raw read by subfolder + filename |
-| `write_proposal` | `(profile, name, code, project=None)` | Write to `proposals/`; IDE polls and opens diff tab |
-| `list_files` | `(profile)` | `{PROG_NAME: {"programs": [...], "tables": [...], "proposals": [...]}}` |
+| `write_proposal` | `(profile, name, code, project=None, path=None)` | Write to `proposals/`; IDE polls and opens diff tab. `path='sub/X.abap'` → `sub/proposals/X.abap` (free-form) |
+| `list_files` | `(profile)` | `{PROG_NAME: {"programs": [...], "tables": [...], "proposals": [...]}}` (SAP layout) |
+| `list_tree` | `(profile)` | free-form `{"dirs": {name: subtree}, "files": [...]}` (Local profile) |
+| `list_all_files` | `(profile)` | every file as a relative `/` path (MCP listing) |
+| `abs_rel` / `rel_of` / `read_rel` / `write_rel` | | relative-path helpers for free-form workspaces |
+| `proposal_rel` / `find_original` | | proposal ⇄ target file mapping (works for both layouts) |
 | `list_profiles` | `()` | Profile names with existing workspace folders |
-| `scan_proposals` | `(profile)` | `[(project, filename), ...]` from all `proposals/` dirs |
+| `scan_proposals` | `(profile)` | `[(parent_rel, filename, mtime_ns), ...]` from every `proposals/` dir at any depth |
 | `get_path` | `(profile, ftype, name, project=None)` | Resolve full filesystem path |
 
 ### Subfolder mapping

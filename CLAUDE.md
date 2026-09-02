@@ -37,7 +37,7 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `main.py` | Entry point — runs `App()`, writes uncaught exceptions to `%APPDATA%\ABAP_AI\crash.log` |
 | `main.spec` | PyInstaller spec (`console=False`, `debug=False`; flip `console=True` to see tracebacks) |
 | `mcp_server.py` | FastMCP server — read-only SAP RFC + workspace tools for Claude Desktop |
-| `ui/main_app.py` | `App(ctk.CTk)` — glue: profiles, threads, tabs, SAP-object tree, workspace explorer, proposal watcher, GitHub sync |
+| `assets/abap_ai.ico` | application icon (window / taskbar / exe via `main.spec` `icon=` + `datas`) |
 | `ui/theme.py` | colours + the application-wide Qt stylesheet (`QSS`) |
 | `ui/bridge.py` | `Bridge.call(fn, …)` = run on the GUI thread from any thread (queued signal); `run_bg` |
 | `ui/main_window.py` | `MainWindow(QMainWindow)` — toolbar, tabs, docks, status bar, all app logic (fetch, discovery, workspace, proposals, git, Claude sessions, Local profile, Open file / Paste code) |
@@ -47,7 +47,7 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `ui/widgets/tables.py` | `fields_table`, `data_table` (QTableWidget) |
 | `ui/widgets/markdown.py` | markdown→HTML, `MessageBubble`, `CodeBlock` (Copy / Open as proposal) |
 | `ui/panels/sap_tree.py` | `SapObjectsPanel` (filter + tree; `TADIR_META`) |
-| `ui/panels/workspace_tree.py` | `WorkspacePanel` (Push/Pull/Refresh, branch, filter, git-coloured tree, context menu) |
+| `ui/panels/workspace_tree.py` | `WorkspacePanel` — `build()` SAP layout / `build_free()` Local folder tree; Push/Pull/📂/⟳, filter, git colours, context menus, file drop |
 | `ui/panels/claude_side.py` | `ClaudeSidePanel` (account, usage bars, session manager) — left dock |
 | `ui/panels/claude_chat.py` | `ClaudeChatTab` (bubbles, composer with attachments / image paste / model combo) |
 | `core/controller.py` | `AnalysisController` — stateless facade; builds a reader per call from the conn dict it receives |
@@ -107,7 +107,10 @@ CLAS → CLASS, PROG → PROG, FUNC → FUNC); other TADIR types only jump.
 `_poll_proposals` runs every 2 s on the main thread but does only cheap work:
 - `workspace.snapshot()` (paths + mtimes) → if changed, `refresh_workspace_tree()` which does
   `git status` in a background thread and rebuilds the tree preserving open state + scroll
-- `scan_proposals(profile)` → a proposal is opened when its key is new **or its mtime changed**
+- `scan_proposals(profile)` walks the whole profile for `proposals/` folders at any depth and
+  returns `(parent_rel, filename, mtime)`; a proposal is opened when its key is new **or its
+  mtime changed**. `_open_proposal` decides SAP-style (key = object name) vs free-form (key =
+  relative path) via `workspace.find_original`
 - `_seed_proposals(profile)` marks existing proposals as seen at startup / profile switch
 The loop is wrapped in try/finally so an error never stops polling.
 
@@ -119,7 +122,8 @@ their relative paths are listed in the prompt for the Read tool), model combo (`
 context checkbox, Stop. Text streams raw and is re-rendered when the text block completes.
 Usage windows from `rate_limit_event` persist in `claude_usage.json` and feed the left dock.
 Session titles default to the first prompt; sessions are listed per profile in the left dock.
-`✦ Claude` / "+ New session" opens `Claude: #n`. Each message = one `claude -p` subprocess (prompt on stdin,
+"+ New session" in the left dock opens `Claude: #n` (there is no toolbar button any more); the
+session list has right-click Rename / Delete (Delete asks, optionally removes the transcript file). Each message = one `claude -p` subprocess (prompt on stdin,
 `--resume <session_id>` after the first turn, `--include-partial-messages` for streaming).
 cwd = `workspace/{profile}`; allowed tools = Read/Glob/Grep/LS + `mcp__<server>`; the MCP
 server config is taken from Claude Desktop's config (any server whose args mention
@@ -130,19 +134,31 @@ deliberately not used: Anthropic does not allow subscription auth through the SD
 third-party apps; the CLI in `-p` mode is fine for the user's own tooling.
 
 ### Layout (Qt)
-`QMainWindow`: toolbar (profile combo · ⚙ · type · name · Fetch · Open file… · Paste code · ✦ Claude),
-central `QTabWidget` (`self.tabs[name] = {widget, kind, view, code, prog, ftype, source_profile}`),
+`QMainWindow`: toolbar (profile combo · ⚙ · type · name · Fetch · Open file… · Paste code),
+central `QTabWidget` (`self.tabs[name] = {widget, kind, view, code, prog, ftype, source_profile, rel}`;
+each closable tab gets its own `✕` `QToolButton#tabclose` because the stock close icon is invisible on the dark theme),
 right docks SAP OBJECTS / WORKSPACE (tabified), left dock CLAUDE, status bar. Dock layout and
 geometry are saved with `saveState/saveGeometry` into `ui_state.json`. Shortcuts: Ctrl+B Claude
 dock, Ctrl+Shift+E workspace, Ctrl+Shift+O objects, Ctrl+W close tab, Ctrl+F find.
 Profiles are edited in `ConnectionDialog`; `get_current_conn()` reads `systems_data`.
 `save_profile(name, data)` / `delete_profile(name)` are the only write paths.
 
-### Local profile
-`LOCAL_PROFILE` ("Local (no SAP)") is always the last entry of the profile combo. With it active
-Fetch is disabled; "Open file…" and "Paste code" import sources into
-`workspace/Local (no SAP)/<NAME>/programs/` (names are forced to Z/Y prefix) and open them like
-any cached object, so the object tree (offline) and Claude tabs work without SAP.
+### Local profile = free-form workspace
+`LOCAL_PROFILE` (`workspace.LOCAL_PROFILE`, "Local (no SAP)") is always the last entry of the
+profile combo. With it active Fetch is disabled and the WORKSPACE dock switches to
+`WorkspacePanel.build_free()`: the raw folder tree under `workspace/Local (no SAP)/`, which the
+user organises however they like (in the IDE via right-click New folder / New file / Import files /
+Rename / Delete, by dropping files on the tree, or directly in Explorer via 📂 — the 2 s snapshot
+poll picks up external changes). Any file opens: `.abap`-like → code tab (`guess_ftype`),
+`.json` field list → table tab, anything else → plain "File:" tab.
+Tabs for free-form files are keyed by the relative path (`Program: reports/ZFI_X.abap`) and carry
+`rel` in their tab entry; Save writes back to that path. "Open file…" / "Paste code" import into
+the folder selected in the tree (root if none); names are **not** forced to Z/Y here.
+Proposals follow the same rule as SAP projects: the proposal for `<dir>/X.abap` is
+`<dir>/proposals/X.abap` (`workspace.proposal_rel`); `find_original` maps it back
+(`<dir>/programs/X` → `<dir>/X` → any `*/programs/X` → anywhere). Diff / Proposal tabs are keyed
+by the target's relative path. `ClaudeSession.is_local` selects `SYSTEM_PROMPT_LOCAL`, which tells
+Claude to use `write_proposal(..., path=<relative file path>)`.
 
 ### Panels talk via signals
 Panels never touch the window; they emit (`jump`, `open_object`, `open_file`, `reveal`, `delete`,
@@ -216,7 +232,7 @@ Started separately: `python mcp_server.py`. Registered in Claude Desktop config.
 | `fetch_table_fields` | Workspace-first (JSON); SAP RFC on miss |
 | `fetch_table_data` | Live RFC_READ_TABLE rows (never cached) |
 | `check_objects_in_tadir` | Live TADIR batch check |
-| `list_workspace_files` / `read_workspace_file` | Browse the cache |
-| `write_proposal` | Write proposed ABAP to `proposals/` → IDE opens a diff tab within 2 s |
+| `list_workspace_files` / `read_workspace_file` | Browse the cache (relative paths; `read_workspace_file(path=…)` for any layout) |
+| `write_proposal` | Write proposed ABAP to `proposals/` → IDE opens a diff tab within 2 s; `path=` targets any file (free-form / nested) |
 
 Return values are prefixed with `[SOURCE: workspace/profile]` or `[SOURCE: SAP/profile]`.

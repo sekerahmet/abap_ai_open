@@ -324,29 +324,30 @@ def list_workspace_files(profile: str = "") -> str:
         profiles = workspace.list_profiles()
         return "Available profiles:\n" + "\n".join(f"- {p}" for p in profiles)
 
-    all_files = workspace.list_files(profile)
-    if not all_files:
+    files = workspace.list_all_files(profile)
+    if not files:
         return f"Workspace for profile '{profile}' is empty."
-
-    lines = [f"Workspace for profile '{profile}':"]
-    for project, types in sorted(all_files.items()):
-        lines.append(f"\n📂 {project}/")
-        for folder, fnames in sorted(types.items()):
-            lines.append(f"  {folder}/")
-            for f in fnames:
-                lines.append(f"    {f}")
+    lines = [f"Workspace for profile '{profile}' (paths relative to the workspace root; "
+             f"'<dir>/proposals/X' is a proposal for '<dir>/programs/X' or '<dir>/X'):"]
+    lines += [f"  {f}" for f in files]
     return "\n".join(lines)
 
 
 @mcp.tool()
-def read_workspace_file(profile: str, folder: str, filename: str, project: str = "") -> str:
+def read_workspace_file(profile: str, folder: str = "", filename: str = "", project: str = "",
+                        path: str = "") -> str:
     """
     Read a file from the local workspace saved by the ABAP AI IDE.
     Use list_workspace_files to discover available files.
+    path: relative path exactly as listed by list_workspace_files (preferred; works for any folder layout)
+    — or the SAP-style triple —
     folder: "programs" for source files, "proposals" for AI proposals
     filename: e.g. ZFI_001_UFRS_01.abap or ZTABLE.json
     project: (optional) The project/program folder name.
     """
+    if path:
+        content = workspace.read_rel(profile, path)
+        return content if content else f"File not found: workspace/{profile}/{path}"
     content = workspace.read_file(profile, folder, filename, project=project if project else None)
     if not content:
         loc = f"{project}/{folder}/{filename}" if project else f"*/{folder}/{filename}"
@@ -355,21 +356,25 @@ def read_workspace_file(profile: str, folder: str, filename: str, project: str =
 
 
 @mcp.tool()
-def write_proposal(profile: str, program_name: str, code: str, project: str = "") -> str:
+def write_proposal(profile: str, program_name: str, code: str, project: str = "", path: str = "") -> str:
     """
-    Write an AI-generated code proposal to the workspace PROP/ folder.
-    The ABAP AI IDE watches this folder and will automatically open
-    a diff tab showing added lines (green) and removed lines (red).
-    Location is resolved automatically: an existing proposal is overwritten,
-    otherwise the proposal lands next to the program's cached source.
-    program_name: the original program name (e.g. ZFI_001_UFRS_01)
-    code: the complete proposed ABAP source code
-    project: (optional) project folder override — normally leave empty.
+    Write an AI-generated code proposal into a proposals/ folder of the workspace.
+    The ABAP AI IDE watches these folders and automatically opens a diff tab
+    (added lines green, removed lines red). Nothing is ever written to SAP.
+    program_name: the original program / file name (e.g. ZFI_001_UFRS_01)
+    code: the complete proposed source (whole file, not a fragment)
+    path: relative path of the file the proposal is for, as listed by list_workspace_files
+          (e.g. 'reports/ZFI_001.abap' or 'ZFI_001/programs/ZFI_001.abap'). Use this for
+          free-form / Local workspaces and nested folders — the proposal is stored as
+          '<that folder>/proposals/<file name>'.
+    project: (optional, SAP-style layout only) project folder override — normally leave empty.
     """
-    # If project not passed, guess from program_name
+    if path:
+        full = workspace.write_proposal(profile, program_name, code, path=path)
+        return f"Proposal saved: {full}\nThe ABAP AI IDE will open a diff tab within 2 seconds."
     proj = project if project else program_name.upper()
-    path = workspace.write_proposal(profile, program_name, code, project=proj)
-    return f"Proposal saved to project '{proj}': {path}\nThe ABAP AI IDE will open a diff tab within 2 seconds."
+    full = workspace.write_proposal(profile, program_name, code, project=proj)
+    return f"Proposal saved to project '{proj}': {full}\nThe ABAP AI IDE will open a diff tab within 2 seconds."
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

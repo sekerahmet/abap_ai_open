@@ -42,8 +42,10 @@ QTabBar::tab {{ background: {PANEL_ALT}; color: {MUTED}; padding: 6px 12px; marg
                border-top-left-radius: 6px; border-top-right-radius: 6px; }}
 QTabBar::tab:selected {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER}; border-bottom: none; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
-QTabBar::close-button {{ image: none; subcontrol-position: right; }}
 QTabBar QToolButton {{ background: {PANEL_ALT}; border: none; }}
+QTabBar QToolButton#tabclose {{ background: transparent; border: none; border-radius: 3px; color: {MUTED};
+                                font-size: 11px; font-weight: bold; padding: 0; margin: 0; }}
+QTabBar QToolButton#tabclose:hover {{ background: {DANGER}; color: white; }}
 QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox {{
     background: {PANEL_ALT}; border: 1px solid {BORDER}; border-radius: 5px; padding: 5px 8px;
     selection-background-color: {SELECT}; }}
@@ -72,6 +74,7 @@ QTreeWidget, QTreeView, QTableWidget, QListWidget {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px; alternate-background-color: #1e1e20;
     selection-background-color: {SELECT}; outline: none; }}
 QTreeWidget::item, QListWidget::item {{ padding: 3px 2px; }}
+QListWidget::item:hover, QTreeWidget::item:hover {{ background: {PANEL_ALT}; }}
 QTreeWidget::item:selected, QListWidget::item:selected, QTableWidget::item:selected {{ background: {SELECT}; color: white; }}
 QHeaderView::section {{ background: {PANEL_ALT}; color: {MUTED}; padding: 4px 6px; border: none; border-right: 1px solid {BORDER}; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}

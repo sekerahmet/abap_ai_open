@@ -17,6 +17,7 @@ import sys
 import json
 import shutil
 import subprocess
+from utils.workspace import LOCAL_PROFILE
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -65,6 +66,20 @@ SYSTEM_PROMPT = (
     "SAP is READ-ONLY: nothing can be written to SAP. To propose a code change call "
     "write_proposal(profile='{profile}', program_name=<NAME>, code=<complete new source>) — "
     "the IDE opens a diff tab automatically. Never write or edit files directly.\n"
+    "Reply in the language the user writes in. Be concise."
+)
+
+SYSTEM_PROMPT_LOCAL = (
+    "You are running inside ABAP AI IDE. This session has NO SAP connection: the working directory is "
+    "the user's own local workspace, organised freely as folders and files (mostly ABAP sources, *.abap; "
+    "also notes, JSON table definitions, etc.). Explore it with Read / Glob / Grep; use paths relative to "
+    "the working directory. Do not call any SAP fetch tools.\n"
+    "Never write or edit the user's files directly. To propose a change to a file call "
+    "write_proposal(profile='{profile}', program_name=<file name without extension>, "
+    "code=<complete new file content>, path=<the file's relative path, e.g. 'reports/ZFI_001.abap'>). "
+    "The proposal is stored as <that folder>/proposals/<file name> and the IDE opens a diff tab "
+    "automatically. If write_proposal is unavailable, put the complete new file in a single ```abap "
+    "code block so the user can open it as a proposal.\n"
     "Reply in the language the user writes in. Be concise."
 )
 
@@ -317,15 +332,20 @@ class ClaudeSession:
     def has_mcp(self) -> bool:
         return bool(self.mcp_path)
 
+    @property
+    def is_local(self) -> bool:
+        return self.profile == LOCAL_PROFILE
+
     def _build_cmd(self, exe: str) -> list:
         tools = list(READ_TOOLS)
         if self.mcp_name:
             tools.append(f"mcp__{self.mcp_name}")
+        sys_prompt = SYSTEM_PROMPT_LOCAL if self.is_local else SYSTEM_PROMPT
         cmd = [exe, "-p", "--output-format", "stream-json", "--verbose",
                "--include-partial-messages",
                "--max-turns", str(self.max_turns),
                "--allowedTools", ",".join(tools),
-               "--append-system-prompt", SYSTEM_PROMPT.format(profile=self.profile)]
+               "--append-system-prompt", sys_prompt.format(profile=self.profile)]
         if self.mcp_path:
             cmd += ["--mcp-config", self.mcp_path]
         if self.model:
