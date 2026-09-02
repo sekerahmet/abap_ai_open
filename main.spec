@@ -29,13 +29,13 @@ exe = EXE(
     a.datas,
     [],
     name='main',
-    debug=True,
+    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # Set to False for production release
+    console=False,  # True → shows a console with tracebacks (dev builds)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

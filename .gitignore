@@ -24,3 +24,6 @@ scratch/
 # IDE files
 .vscode/
 .idea/
+
+# Local connection profiles (contain passwords)
+systems.json

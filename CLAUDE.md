@@ -2,8 +2,14 @@
 
 ## What This Is
 A desktop IDE built with Python + CustomTkinter that connects to SAP systems via RFC (pyrfc),
-fetches ABAP source code, parses referenced objects, and displays a git-aware workspace explorer.
-Also exposes an MCP server so Claude Desktop can read/write the same objects via RFC + local workspace.
+fetches ABAP source code **read-only**, parses referenced objects, and displays a git-aware
+workspace explorer. Also exposes an MCP server so Claude Desktop can read the same objects
+via RFC + local workspace and drop code *proposals* into the workspace (shown as diffs).
+
+**Hard constraint: the SAP connection is one-way. Nothing is ever written to SAP.**
+There is no upload, transport, syntax-check or AI-chat code in this project any more —
+do not re-introduce them.
+
 Packaged as a single Windows .exe with PyInstaller.
 
 ---
@@ -11,17 +17,16 @@ Packaged as a single Windows .exe with PyInstaller.
 ## Architecture (3 layers)
 
 ```
-ui/          ← CustomTkinter GUI  (never touch SAP/AI directly)
-core/        ← Business logic     (SAP readers, controller)
-utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync)
+ui/          ← CustomTkinter GUI  (never touches pyrfc directly)
+core/        ← SAP readers + controller facade
+utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync, env_loader)
 ```
 
-### Layer responsibilities
 | Layer | Allowed to | Must NOT |
 |---|---|---|
-| `ui/` | call `app.controller.*`, update widgets | import pyrfc, call AI directly |
+| `ui/` | call `app.controller.*`, update widgets | import pyrfc |
 | `core/` | RFC calls, pure logic | import tkinter |
-| `utils/` | regex, text manipulation, filesystem | import tkinter, pyrfc, `core.*` |
+| `utils/` | regex, text manipulation, filesystem, subprocess git | import tkinter, pyrfc, `core.*` |
 
 ---
 
@@ -29,74 +34,80 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 
 | File | Role |
 |---|---|
-| `main.py` | Entry point — just `App().mainloop()` |
-| `main.spec` | PyInstaller spec (`console=True` for dev, `False` for release) |
-| `mcp_server.py` | FastMCP server — exposes SAP RFC + workspace tools to Claude Desktop |
-| `ui/main_app.py` | `App(ctk.CTk)` — glue class; owns threading, tab routing, log |
-| `ui/panels/sidebar.py` | `SidebarPanel` — connection profiles only (profile dropdown + 6 Entry fields + Save button) |
-| `ui/panels/editor.py` | `EditorPanel` — custom tab bar + content area |
-| `ui/panels/explorer_panel.py` | `ExplorerPanel` — git-aware right column: SAP Objects + Workspace tabs, Push/Pull/Refresh toolbar, branch label |
-| `core/controller.py` | `AnalysisController` — single facade for all SAP operations |
-| `core/sap/connection.py` | `SAPConnectionManager` — singleton, always fresh connect (no ping) |
-| `core/sap/program_reader.py` | `ProgramReader` — RPY_PROGRAM_READ, RPY_FUNCTIONMODULE_READ, class includes |
-| `core/sap/program_writer.py` | `ProgramWriter` — transport list, TR assign, syntax check, write (5 candidates) |
-| `core/sap/ddic_reader.py` | `DDICReader` — DDIF_FIELDINFO_GET, TADIR batch check |
-| `core/config.py` | `Config` — env var defaults |
-| `utils/highlighter.py` | `ABAPHighlighter` — regex tag-based syntax coloring for CTkTextbox |
-| `utils/parser.py` | `ABAPParser` — extracts DICT/CLASS/INCLUDES/FIELDS/events from ABAP source |
-| `utils/workspace.py` | `workspace` — filesystem bridge; saves/reads Z*/Y* objects in AppData |
-| `utils/github_sync.py` | `github_sync` — push/pull workspace to GitHub via subprocess git; git status + branch query |
+| `main.py` | Entry point — runs `App()`, writes uncaught exceptions to `%APPDATA%\ABAP_AI\crash.log` |
+| `main.spec` | PyInstaller spec (`console=False`, `debug=False`; flip `console=True` to see tracebacks) |
+| `mcp_server.py` | FastMCP server — read-only SAP RFC + workspace tools for Claude Desktop |
+| `ui/main_app.py` | `App(ctk.CTk)` — glue: profiles, threads, tabs, SAP-object tree, workspace explorer, proposal watcher, GitHub sync |
+| `ui/panels/sidebar.py` | `SidebarPanel` — connection profiles (dropdown + entries + Save), `CONN_FIELDS` |
+| `ui/panels/editor.py` | `EditorPanel` — fetch bar, horizontally scrollable tab bar, content area, `OBJECT_TYPES` |
+| `ui/panels/explorer_panel.py` | `ExplorerPanel` — SAP Objects tree + Workspace tree (git status, Push/Pull/Refresh, branch label) |
+| `core/controller.py` | `AnalysisController` — stateless facade; builds a reader per call from the conn dict it receives |
+| `core/sap/connection.py` | `SAPConnectionManager` — one connection per `execute()`, or `session()` for batches; no shared state |
+| `core/sap/program_reader.py` | `ProgramReader` — programs/includes, function modules, global classes (all includes + methods via TMDIR) |
+| `core/sap/ddic_reader.py` | `DDICReader` — DDIF_FIELDINFO_GET, RFC_READ_TABLE data, chunked TADIR check |
+| `utils/parser.py` | `ABAPParser` — strips comments, extracts DICT/CLASS/INCLUDES/FORMS/FIELDS/EVENTS with line numbers |
+| `utils/highlighter.py` | `ABAPHighlighter` — line/col based syntax colouring (fast on large sources) |
+| `utils/workspace.py` | filesystem bridge; Z*/Y* objects in AppData; "existing location wins" rule |
+| `utils/github_sync.py` | push/pull via git CLI; token passed as HTTP header, never stored; serialised by a lock |
+| `utils/env_loader.py` | `.env` discovery for source and PyInstaller runs |
 
 ---
 
 ## Key Patterns
 
 ### Threading rule (critical)
-All SAP RFC calls run in `daemon=True` threads. GUI updates **must** use `self.after(0, fn, args)`.
-Never call tkinter widgets from a background thread directly — includes `messagebox` dialogs.
+All RFC / git / disk-heavy work runs in `daemon=True` threads. GUI updates **must** go through
+`self.after(0, fn, args)`. Never touch widgets (or `messagebox`) from a background thread.
+Read `StringVar`s (e.g. the active profile) on the main thread and pass the value into the worker.
 
-```python
-# CORRECT — dialog from background thread
-self.after(0, self._ask_something, arg1, arg2)   # runs on main thread
-return   # background thread ends here
+### Connection handling
+`SAPConnectionManager` is **not** a singleton. `execute()` opens → calls → closes; `session()`
+keeps one connection for a batch. The controller is stateless, so the sidebar's active profile is
+always the system that gets called.
 
-# WRONG — will crash
-mbox.askyesno(...)   # called from background thread
-```
-
-### Tab opening (duplicate guard)
-`open_code_tab`, `open_ddic_tab`, and `open_diff_tab` all check `self.editor.tabs_dict` first.
-If tab name already exists → just `set_active(name)`, do not create a duplicate.
-
-### DDIC display
-Tables and Structures open via `open_ddic_tab(name, attrs, ftype)` which renders a `ttk.Treeview`
-with columns: Field Name / Type / Length / Description.
-Code tabs open via `open_code_tab(name, code, _attrs, prog, ftype)` which renders a `CTkTextbox` + highlighter.
-Diff tabs open via `open_diff_tab(name, original_code, proposed_code)` with green/red line coloring.
+### Tab naming (duplicate guard)
+Every tab title is produced by `_tab_name(ftype, NAME)` in `main_app.py`:
+`Program: X`, `Global Class: X`, `Function Module: X`, `Table: X` (tables *and* structures),
+plus `Proposal: X` (editable proposal code), `Diff: X`, `Data: X [where]`.
+`open_*_tab` methods first check `self.editor.tabs_dict` and just activate an existing tab.
 
 ### Workspace-first fetch
-`run_fetch` and `run_sub_fetch` both accept a `force=False` parameter.
-- `force=False` (default): check `utils/workspace` first; skip RFC if found
-- `force=True`: always hit SAP, overwrite workspace cache
-- Re-fetch button in each code/DDIC tab calls `refetch_object(tab_name, prog, ftype)`
-- For `ftype="Program"`, Re-fetch also passes `force_sub=True` to `run_proactive_check`,
-  forcing all discovered Z*/Y* tables to be re-fetched from SAP (not just re-used from cache)
+`run_fetch` / `run_sub_fetch` take `force=False`:
+- `force=False`: read from `utils/workspace` first; RFC only on cache miss
+- `force=True` (Re-fetch button): always RFC, overwrite the cache; for `Program` also re-parse
+  includes and re-cache Z*/Y* tables (`force_sub=True`)
+Loading a Program from the workspace builds the object tree offline (`_populate_tree_offline`)
+using only cached knowledge — no TADIR check until Re-fetch.
 
-### .env path (PyInstaller safe)
-All modules that load `.env` use a `_find_dotenv()` helper:
-```python
-def _find_dotenv():
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), ".env")
-    return os.path.join(os.path.dirname(__file__), "..", ".env")
-load_dotenv(_find_dotenv())
-```
-After building, copy `.env` next to `dist/main.exe` — it is NOT bundled (contains secrets).
+### Workspace location rule
+`workspace.save_*` / `write_proposal` keep a file where it already exists (any project folder of
+the profile). Otherwise `project=` is used, else the object's own folder. This stops Save /
+Re-fetch from creating duplicate copies of includes and tables.
+
+### Cached .abap object type
+The workspace stores no type metadata; `workspace.guess_ftype(code)` infers
+`Function Module` / `Global Class` / `Program` from the content when a file is opened.
+
+### SAP Objects tree
+`values=(tadir_type, line, name)`. Single click → `jump_to_line` in the main program tab.
+Double click → `run_sub_fetch` with category from `_TADIR_META` (TABL/VIEW → DICT,
+CLAS → CLASS, PROG → PROG, FUNC → FUNC); other TADIR types only jump.
+
+### Proposal watcher
+`_poll_proposals` runs every 2 s on the main thread but does only cheap work:
+- `workspace.snapshot()` (paths + mtimes) → if changed, `refresh_workspace_tree()` which does
+  `git status` in a background thread and rebuilds the tree preserving open state + scroll
+- `scan_proposals(profile)` → a proposal is opened when its key is new **or its mtime changed**
+- `_seed_proposals(profile)` marks existing proposals as seen at startup / profile switch
+The loop is wrapped in try/finally so an error never stops polling.
 
 ### App context wiring
-`SidebarPanel`, `EditorPanel`, `ExplorerPanel` each receive `app_context` (the `App` instance).
-They set widget references on `app` (e.g. `self.app.fetch_btn = ...`) so `App` can call them
-from threading callbacks without circular imports.
+Panels receive `app_context` (the `App`) and set widget references on it
+(`self.app.sap_ashost`, `self.app.tree`, `self.app.ws_tree`, `self.app.fetch_btn`).
+
+### .env
+All modules use `utils.env_loader.load_robust_env()`. `.env` is **not** bundled — copy it next
+to `dist/main.exe`. Keys: `GITHUB_TOKEN`, `GITHUB_REPO`, optional `SAP_*` fallbacks for the MCP server.
 
 ---
 
@@ -104,91 +115,47 @@ from threading callbacks without circular imports.
 
 | What | Where |
 |---|---|
-| Connection profiles | `%APPDATA%\ABAP_AI\systems.json` |
-| Workspace (Z*/Y* source code) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\programs\` |
-| Workspace (Z*/Y* table fields) | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\tables\` |
-| AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROG_NAME}\proposals\` |
-| GitHub token | `.env` → `GITHUB_TOKEN`, `GITHUB_REPO` |
+| Connection profiles (plain-text passwords) | `%APPDATA%\ABAP_AI\systems.json` |
+| Workspace source | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROJECT}\programs\NAME.abap` |
+| Workspace table fields | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROJECT}\tables\NAME.json` |
+| AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROJECT}\proposals\NAME.abap` |
+| Crash log | `%APPDATA%\ABAP_AI\crash.log` |
+| Workspace git repo | `%APPDATA%\ABAP_AI\workspace\.git` (branch `main`, proposals ignored) |
 
-All paths use `%APPDATA%` — survive `pyinstaller --clean`, uninstall, and `dist/` deletion.
-Directory is auto-created on first run.
+`systems.json` in the repo root is git-ignored — never commit it.
 
 ---
 
 ## Build
 
 ```bash
-pyinstaller main.spec
-# Output: dist/main.exe
-# console=True during development (shows tracebacks)
-# console=False for release build
+pyinstaller main.spec       # → dist/main.exe ; then copy .env next to it
 ```
-
-**After `--clean`:** only `dist/` is wiped. AppData (`systems.json`, `workspace/`) is untouched.
-**After build:** copy `.env` next to `dist/main.exe`.
+`main.spec` has `console=False`. For debugging a build, set `console=True` temporarily or
+read `%APPDATA%\ABAP_AI\crash.log`.
 
 ---
 
-## RFC Functions Used
+## RFC Functions Used (all read-only)
 
 | RFC | Purpose |
 |---|---|
-| `RPY_PROGRAM_READ` | Fetch ABAP program / include source |
-| `RPY_FUNCTIONMODULE_READ` | Fetch Function Module source |
-| `DDIF_FIELDINFO_GET` | Fetch table/structure field metadata |
-| `RFC_READ_TABLE` on `TADIR` | Verify which objects exist in the system (batch) |
-| `RFC_READ_TABLE` on `E070`/`E07T` | List open transport requests + descriptions |
-| `RS_CORR_INSERT` | Assign object to transport request (OBJECT_CLASS: ABAP/CLAS) |
-| `SYNTAX_CHECK` | Check ABAP syntax before write (optional — skipped if unavailable) |
-| `RPY_PROGRAM_WRITE` | Write ABAP source (candidate 1) |
-| `RPY_PROGRAM_INSERT_MASTER` | Write ABAP source (candidate 2) |
-| `RS_PROGRAM_WRITE` | Write ABAP source (candidate 3 — older systems) |
-| `RFC_ABAP_INSTALL_AND_RUN` | Write ABAP source (candidate 4 — PROGRAMNAME, MODE='F', PROGRAM table) |
-| `Z_ABAP_AI_WRITE_PROG` | Write ABAP source (candidate 5 — custom Z FM, most reliable fallback) |
+| `RPY_PROGRAM_READ` | Program / include source (`SOURCE_EXTENDED` or `SOURCE`) |
+| `RPY_FUNCTIONMODULE_READ_NEW` → `RPY_FUNCTIONMODULE_READ` | Function module source |
+| `RFC_READ_TABLE` on `TMDIR` | Method list of a class → `…CM001` include names (base-36 index) |
+| `DDIF_FIELDINFO_GET` | Table / structure / view fields |
+| `RFC_READ_TABLE` on `TADIR` | Batch existence check (40 names per call) |
+| `RFC_READ_TABLE` on any table | Table data (max 200 rows, WHERE split at word boundaries) |
 
-### Z_ABAP_AI_WRITE_PROG — custom FM signature
-```abap
-FUNCTION Z_ABAP_AI_WRITE_PROG.
-*"  IMPORTING  REFERENCE(IV_PROG) TYPE SYREPID
-*"  TABLES     IT_SOURCE LIKE ZABAP_AI_SRCLINE
-*"  EXCEPTIONS WRITE_ERROR
-  INSERT REPORT iv_prog FROM it_source.
-  IF sy-subrc <> 0. RAISE write_error. ENDIF.
-ENDFUNCTION.
-```
-`ZABAP_AI_SRCLINE` = SE11 structure with one field: `LINE CHAR 72`.
-Must be Remote-Enabled (RFC) and activated in the target system.
+### Class include naming
+Class name padded to 30 chars with `=`: `ZCL_X====================CU`.
+Sections: `CCDEF`, `CU` (public), `CO` (protected), `CI` (private), `CCMAC`, `CCIMP`.
+Methods: `CM` + 3-digit base-36 of `TMDIR.METHODINDX`.
 
-### Write flow (ProgramWriter.write_program)
-```
-1. SYNTAX_CHECK           → warn/block on errors, skip if RFC unavailable
-2. RS_CORR_INSERT         → assign to TR (TR_ASSIGN_FAILED marker if fails)
-3. write candidates 1–5   → first success wins
-```
-
-### TADIR query constraints
-- `OPTIONS` rows max **72 chars** each
-- One condition per row; subsequent rows start with `OR `
-- `WA` field is fixed-width: `OBJ_NAME` = chars 0–39, `OBJECT` = chars 40+
-- Do NOT use `.split()` on WA — always slice by position
-
-### RS_CORR_INSERT OBJECT_CLASS mapping
-Different from TADIR OBJECT field:
-- `PROG` / `FUGR` → `"ABAP"`
-- `CLAS` → `"CLAS"`
-
----
-
-## SAP Object Types (TADIR OBJECT field)
-| Code | Meaning |
-|---|---|
-| `PROG` | Program / Include |
-| `TABL` | Transparent Table |
-| `VIEW` | View |
-| `CLAS` | Global Class |
-| `FUGR` | Function Group |
-| `FUNC` | Function Module |
-| `MSAG` | Message Class |
+### RFC_READ_TABLE constraints
+- `OPTIONS` rows max **72 chars**; one condition per row; later rows start with `OR ` / `AND `
+- TADIR `WA` is fixed-width: `OBJ_NAME` = chars 0–39, `OBJECT` = 40+ — slice, never split
+- With `DELIMITER="|"`, split on `|` (E070/TMDIR style reads)
 
 ---
 
@@ -196,30 +163,15 @@ Different from TADIR OBJECT field:
 
 Started separately: `python mcp_server.py`. Registered in Claude Desktop config.
 
-### Connection management
-- `CONN` dict and `_active_profile` string are module-level mutables
-- `switch_profile` tool updates `CONN` in-place; `SAPConnectionManager` detects param change
-- `_program_reader()` and `_ddic_reader()` always pass `dict(CONN)` (copy) so singleton resets
-
-### Workspace-first in MCP tools
-All four fetch tools follow the same pattern as the IDE:
-```
-fetch_program(name, force_fetch=False)
-  → workspace.read_code(_active_profile, ftype, name) if not force_fetch
-  → SAP RFC if cache miss, then workspace.save_code(...)
-```
-Return value prefixed with `[SOURCE: workspace/profile]` or `[SOURCE: SAP/profile]`.
-
-### MCP tool inventory
 | Tool | Description |
 |---|---|
 | `list_sap_profiles` | Show available profiles + active one |
 | `switch_profile` | Change active SAP connection at runtime |
-| `fetch_program` | Workspace-first; falls back to SAP RFC |
-| `fetch_function_module` | Workspace-first; falls back to SAP RFC |
-| `fetch_class` | Workspace-first; falls back to SAP RFC |
-| `fetch_table_fields` | Workspace-first (JSON); falls back to SAP RFC |
-| `check_objects_in_tadir` | Live TADIR batch check (no workspace) |
-| `list_workspace_files` | List all cached Z*/Y* files by profile |
-| `read_workspace_file` | Read any workspace file directly |
-| `write_proposal` | Write proposed ABAP to prop/ → IDE opens diff tab |
+| `fetch_program` / `fetch_function_module` / `fetch_class` | Workspace-first; SAP RFC on miss; `force_fetch=True` bypasses cache |
+| `fetch_table_fields` | Workspace-first (JSON); SAP RFC on miss |
+| `fetch_table_data` | Live RFC_READ_TABLE rows (never cached) |
+| `check_objects_in_tadir` | Live TADIR batch check |
+| `list_workspace_files` / `read_workspace_file` | Browse the cache |
+| `write_proposal` | Write proposed ABAP to `proposals/` → IDE opens a diff tab within 2 s |
+
+Return values are prefixed with `[SOURCE: workspace/profile]` or `[SOURCE: SAP/profile]`.

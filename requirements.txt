@@ -1,9 +1,6 @@
 pyrfc==3.3.1
-fastmcp>=3.2.3
-anthropic==0.21.3
-google-generativeai==0.8.6
 customtkinter==5.2.2
 python-dotenv>=1.1.0
-keyring>=25.6.0
-cryptography==46.0.7
 Pillow>=10.0.0
+# MCP server only (python mcp_server.py) — not needed for the IDE .exe
+fastmcp>=3.2.3

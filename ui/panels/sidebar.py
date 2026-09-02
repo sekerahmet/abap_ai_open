@@ -1,19 +1,29 @@
 import customtkinter as ctk
 
+CONN_FIELDS = [
+    ("ashost", "App Server", "10.x.x.x"),
+    ("sysnr",  "Sys Nr",     "00"),
+    ("client", "Client",     "100"),
+    ("user",   "User",       "SAPUSER"),
+    ("passwd", "Password",   "****"),
+    ("router", "SAP Router", "/H/..."),
+]
+
+
 class SidebarPanel(ctk.CTkFrame):
+    """Connection profiles only: profile dropdown + entry fields + Save button."""
+
     def __init__(self, parent, app_context):
         super().__init__(parent, corner_radius=0)
         self.app = app_context
-        self.grid_rowconfigure(0, weight=0)  # connection settings
+        self.grid_rowconfigure(0, weight=0)
         self.grid_columnconfigure(0, weight=1)
-
         self._setup_settings()
 
     def _setup_settings(self):
-        self.settings_pane = ctk.CTkScrollableFrame(self, label_text="Connection Settings", height=380)
+        self.settings_pane = ctk.CTkScrollableFrame(self, label_text="Connection Settings", height=420)
         self.settings_pane.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
 
-        # Profile Select
         sys_row = ctk.CTkFrame(self.settings_pane, fg_color="transparent")
         sys_row.pack(fill="x", padx=10, pady=5)
 
@@ -29,19 +39,17 @@ class SidebarPanel(ctk.CTkFrame):
         ctk.CTkButton(sys_row, text="Del", width=60, fg_color="#6e2b28",
                       command=self.app.delete_current_system).pack(side="left")
 
-        for attr, label, ph in [
-            ("ashost", "App Server", "10.x.x.x"),
-            ("sysnr",  "Sys Nr",    "00"),
-            ("client", "Client",    "100"),
-            ("user",   "User",      "SAPUSER"),
-        ]:
-            self._create_field(label, ph, attr)
-        self._create_field("Password", "****", "passwd", show="*")
-        self._create_field("SAP Router", "/H/...", "router")
+        for attr, label, ph in CONN_FIELDS:
+            self._create_field(label, ph, attr, show="*" if attr == "passwd" else None)
 
         ctk.CTkButton(self.settings_pane, text="Save Profile",
                       font=ctk.CTkFont(weight="bold"),
                       command=self.app.save_current_system).pack(fill="x", padx=10, pady=(10, 8))
+
+        ctk.CTkLabel(self.settings_pane,
+                     text="Read-only connection.\nNothing is ever written to SAP.",
+                     font=ctk.CTkFont(size=10), text_color="#777777",
+                     justify="left").pack(anchor="w", padx=10, pady=(0, 6))
 
     def _create_field(self, label, ph, attr, show=None):
         f = ctk.CTkFrame(self.settings_pane, fg_color="transparent")
@@ -52,4 +60,7 @@ class SidebarPanel(ctk.CTkFrame):
         entry.pack(fill="x")
         setattr(self.app, "sap_" + attr, entry)
 
-
+    def set_profiles(self, names: list, select: str = None):
+        values = names if names else ["New Profile"]
+        self.system_dropdown.configure(values=values)
+        self.system_var.set(select if select else values[0])

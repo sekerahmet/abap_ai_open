@@ -1,6 +1,8 @@
 """
 ABAP AI — MCP Server
-Exposes SAP RFC operations as tools for Claude Desktop / Claude Code.
+Exposes READ-ONLY SAP RFC operations + the local workspace as tools for
+Claude Desktop / Claude Code.  Nothing is ever written to SAP; the only write
+target is the workspace proposals/ folder, which the IDE shows as a diff.
 
 Connection priority at startup:
   1. SAP_PROFILE env var  → load named profile from systems.json
@@ -39,8 +41,11 @@ _active_profile: str = ""
 def _read_profiles() -> dict:
     if not os.path.exists(_APPDATA_SYSTEMS):
         return {}
-    with open(_APPDATA_SYSTEMS, "r") as f:
-        return json.load(f)
+    try:
+        with open(_APPDATA_SYSTEMS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def _profile_data_to_conn(data: dict) -> dict:
@@ -85,7 +90,7 @@ _init_conn()
 
 
 def _program_reader() -> ProgramReader:
-    return ProgramReader(dict(CONN))  # copy so singleton detects param changes
+    return ProgramReader(dict(CONN))
 
 
 def _ddic_reader() -> DDICReader:
@@ -104,7 +109,8 @@ mcp = FastMCP(
         "IMPORTANT: Always call list_sap_profiles first to confirm which system is active. "
         "If the requested object is not found, suggest switching profiles with switch_profile. "
         "When you need more context about a referenced table, class, or include — fetch it autonomously. "
-        "Standard SAP objects (not Z*/Y*) are fetched live and not saved to the workspace cache."
+        "Standard SAP objects (not Z*/Y*) are fetched live and not saved to the workspace cache. "
+        "This connection is READ-ONLY: code changes go to write_proposal, never to SAP."
     ),
 )
 
@@ -147,7 +153,7 @@ def switch_profile(profile_name: str) -> str:
     data = profiles[profile_name]
     new_conn = _profile_data_to_conn(data)
 
-    # Update CONN in place — SAPConnectionManager singleton detects the change
+    # Update CONN in place — every reader is built from a copy of it
     CONN.clear()
     CONN.update(new_conn)
     _active_profile = profile_name
@@ -354,9 +360,11 @@ def write_proposal(profile: str, program_name: str, code: str, project: str = ""
     Write an AI-generated code proposal to the workspace PROP/ folder.
     The ABAP AI IDE watches this folder and will automatically open
     a diff tab showing added lines (green) and removed lines (red).
+    Location is resolved automatically: an existing proposal is overwritten,
+    otherwise the proposal lands next to the program's cached source.
     program_name: the original program name (e.g. ZFI_001_UFRS_01)
     code: the complete proposed ABAP source code
-    project: (optional) The project/program folder name.
+    project: (optional) project folder override — normally leave empty.
     """
     # If project not passed, guess from program_name
     proj = project if project else program_name.upper()

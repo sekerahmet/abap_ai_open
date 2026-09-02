@@ -1,53 +1,65 @@
 # ABAP AI IDE — Coding Rules
 
-## 1. Layer Separation (hard rule)
+## 0. Read-only SAP (hard rule)
+
+The RFC connection is **one-way**. Only read-only function modules are called
+(`RPY_*_READ*`, `DDIF_FIELDINFO_GET`, `RFC_READ_TABLE`). Never add a write, transport,
+activation or "install and run" RFC. Code changes produced by AI go to the workspace
+`proposals/` folder, never to SAP.
+
+---
+
+## 1. Layer Separation
 
 | Layer | Import allowed | Import forbidden |
 |---|---|---|
-| `ui/` | `core.*`, `utils.*`, `customtkinter`, `tkinter` | `pyrfc`, direct AI SDK calls |
-| `core/` | `pyrfc`, AI SDKs, `utils.*` | `tkinter`, `customtkinter` |
-| `utils/` | `re`, stdlib only | `tkinter`, `pyrfc`, `core.*` |
-
-Breaking layer separation causes circular imports and makes unit testing impossible.
+| `ui/` | `core.*`, `utils.*`, `customtkinter`, `tkinter` | `pyrfc` |
+| `core/` | `pyrfc`, `utils.*` | `tkinter`, `customtkinter` |
+| `utils/` | stdlib only | `tkinter`, `pyrfc`, `core.*` |
 
 ---
 
 ## 2. Threading — Non-Negotiable
 
-Every SAP RFC call **must** run in a daemon thread.
-Every widget update **must** go through `self.after(0, fn, args)`.
+Every RFC / git / heavy disk call runs in a daemon thread; every widget update goes through
+`self.after(0, fn, args)`. Read Tk variables (active profile, entry fields) on the main thread
+**before** starting the thread and pass the values as arguments.
 
 ```python
 # CORRECT
-threading.Thread(target=self._do_work, daemon=True).start()
+threading.Thread(target=self.run_fetch,
+                 args=(self.get_current_conn(), prog, ftype, self.active_profile()),
+                 daemon=True).start()
 
-def _do_work(self):
-    result = self.controller.fetch_program(conn, name)
-    self.after(0, self.write_log, "done")   # safe GUI update
-
-# WRONG — will freeze UI or crash
-result = self.controller.fetch_program(conn, name)  # blocking call on main thread
-self.write_log("done")                               # widget call from background thread
+def run_fetch(self, conn, prog, ftype, profile, ...):
+    code, attrs = self.controller.fetch_program(conn, prog)
+    self.after(0, self.open_code_tab, ...)     # safe GUI update
 ```
 
 ---
 
 ## 3. Return Convention for SAP Methods
 
-All `core/` methods that call SAP return a 2-tuple:
-```python
-return result, attrs    # success
-return None, error_str  # failure
-```
-Callers check `if not code:` before using the result.
-Never raise exceptions across the thread boundary — catch and return `(None, str(e))`.
+All `core/` methods return a 2-tuple: `(result, attrs)` on success, `(None, error_str)` on
+failure. Batch methods return `{NAME: (result, attrs_or_err)}`. Never raise across the thread
+boundary — catch and return `(None, str(e))`.
 
 ---
 
-## 4. Tab Deduplication
+## 4. Connections
 
-Never open a new tab if one with the same name is already open.
-Always start `open_*_tab` methods with:
+`SAPConnectionManager` is a plain class (no singleton). `execute()` = open, call, close.
+Use `with mgr.session() as call:` when doing several calls in a row. The controller is
+stateless: always pass the conn dict, never cache readers.
+pyrfc expects `saprouter` (not `router`) — `App.get_current_conn()` does the mapping.
+
+---
+
+## 5. Tab Names
+
+Build every tab title with `_tab_name(ftype, name)` (`main_app.py`). Names are upper-cased;
+tables and structures both use `Table:`. Proposal code tabs are `Proposal: X`, diffs `Diff: X`.
+Every `open_*_tab` starts with the duplicate guard:
 ```python
 if name in self.editor.tabs_dict:
     self.editor.set_active(name)
@@ -56,100 +68,60 @@ if name in self.editor.tabs_dict:
 
 ---
 
-## 5. SAP Connection Parameters
+## 6. Workspace Writes
 
-- pyrfc expects `saprouter` (not `router`) — always map the key before passing to `pyrfc.Connection`
-- `get_current_conn()` in `App` handles this mapping — use it, don't build conn dicts manually
-- `SAPConnectionManager` is a singleton; params-change detection is automatic
-
----
-
-## 6. RFC_READ_TABLE OPTIONS Format
-
-Each OPTIONS row must be `{"TEXT": "..."}` with content **≤ 72 characters**.
-One condition per row. `OR` goes at the **start** of subsequent rows:
-
-```python
-options = []
-for i, name in enumerate(names):
-    line = f"OBJ_NAME = '{name}'"
-    if i > 0:
-        line = "OR " + line
-    options.append({"TEXT": line})
-```
-
-`WA` field is **fixed-width** — always slice, never split:
-```python
-obj_name = wa[:40].strip()
-obj_type = wa[40:].strip()
-```
+Call `workspace.save_code / save_table / write_proposal` with `project=None` unless you are
+caching a dependency under a known main program. The module keeps a file where it already
+exists; never compute paths by hand in `ui/`.
 
 ---
 
-## 7. DDIC Display vs Code Display
+## 7. RFC_READ_TABLE OPTIONS
 
-| Object type | Display method |
-|---|---|
-| Table, Structure | `open_ddic_tab(name, attrs)` — ttk.Treeview grid |
-| Program, Include, Class, FM, Proposal | `open_code_tab(name, code)` — CTkTextbox + highlighter |
-
-Never display table field lists as code text.
+Rows ≤ 72 chars, one condition per row, `OR ` / `AND ` at the **start** of later rows.
+Use `ddic_reader.split_where()` for user-supplied WHERE clauses. TADIR checks are chunked
+(40 names per call). `WA` for TADIR is fixed-width — slice by position.
 
 ---
 
-## 8. ABAP Parser — Adding Patterns Safely
+## 8. Parser Patterns
 
-Before adding a new DICT regex pattern:
-1. Confirm it won't match ABAP keywords (check `_ABAP_KEYWORDS` set)
-2. Confirm it captures a group `(\w+)` for the object name (not the full match)
-3. Test against screen field names like `SO_MATNR-LOW`, `SSCRFIELDS`, `TEXT-001`
-
-The TADIR filter in `populate_tree` is a second safety net but not a substitute for clean patterns.
-
----
-
-## 9. App Context Wiring (Widget References)
-
-Panels store widget references on the `app` object using `setattr(self.app, "sap_"+attr, entry)`.
-This is intentional — it avoids circular imports while letting `App`'s threaded callbacks
-reach panel widgets. Follow this pattern when adding new fields.
+Before adding a DICT/CLASS regex:
+1. It must capture the object name in group 1.
+2. Check it against `_ABAP_KEYWORDS` / `_CLASS_EXCLUDE`.
+3. Test with `python -c "from utils.parser import ABAPParser; ..."` on a snippet containing
+   screen fields (`SO_MATNR-LOW`, `SSCRFIELDS`, `TEXT-001`), `INCLUDE STRUCTURE`, comments.
+Comments are stripped before matching; the TADIR filter in `populate_tree` is the second net.
 
 ---
 
-## 10. Naming Conventions
+## 9. Proposal Watcher
+
+`_poll_proposals` must stay cheap (snapshot + scan, no git, no RFC) and must always
+re-schedule itself in `finally`. New proposals are detected by key **and mtime**.
+
+---
+
+## 10. Naming
 
 | Thing | Convention | Example |
 |---|---|---|
-| Background worker method | `run_*` | `run_fetch`, `run_proactive_check` |
-| GUI update / tab opener | `open_*_tab`, `update_*`, `write_*` | `open_code_tab`, `write_log` |
-| SAP reader methods | `fetch_*`, `check_*` | `fetch_table`, `check_objects_batch` |
-| Panel setup methods | `_setup_*` | `_setup_ui`, `_setup_explorer` |
-| Private helpers | leading underscore | `_merge`, `_worst` |
+| Background worker | `run_*` / `_*_worker` | `run_fetch`, `_ws_refresh_worker` |
+| GUI update / tab opener | `open_*_tab`, `write_*`, `_ws_apply` | `open_code_tab` |
+| SAP readers | `fetch_*`, `check_*` | `fetch_table`, `check_objects_batch` |
+| Panel setup | `_setup_*` | `_setup_workspace_tree` |
 
 ---
 
-## 11. No Unused Code / Speculation
+## 11. No Speculative Code
 
-- Do not add error handling for scenarios that can't happen inside this codebase
-- Do not add configuration flags for hypothetical future options
-- Do not create helper functions for one-off operations
-- Remove code before committing if it is commented out
+No handlers for scenarios that cannot happen here, no config flags for hypothetical options,
+no commented-out code in commits.
 
 ---
 
-## 12. PyInstaller Packaging Notes
+## 12. Packaging
 
-- User data goes to `%APPDATA%\ABAP_AI\` — never relative to the exe or the working directory
-- `console=True` during development (tracebacks visible), `False` for release
-- After any code change: rebuild with `pyinstaller main.spec`
-- `--clean` only wipes `build/` and `dist/` — `%APPDATA%` is untouched
-
----
-
-## 13. Proposal Protocol (MCP server → IDE)
-
-The MCP server writes proposals to `workspace/{profile}/{project}/proposals/*.abap`.
-The IDE polls every 2000 ms via `_poll_proposals()` and opens a diff tab automatically.
-
-Watched key format: `"profile/project/filename"` — tracked in `_watched_proposals` set.
-Do not change the proposals subfolder name without updating both `workspace.py` and `_poll_proposals`.
+User data → `%APPDATA%\ABAP_AI\`. `main.spec`: `console=False`, `debug=False`.
+Uncaught exceptions land in `%APPDATA%\ABAP_AI\crash.log`. Rebuild with `pyinstaller main.spec`
+and copy `.env` next to the exe. `systems.json` is git-ignored — keep it that way.

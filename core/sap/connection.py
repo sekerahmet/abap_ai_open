@@ -1,41 +1,60 @@
+"""
+SAPConnectionManager — thin wrapper around pyrfc.Connection.
+
+Design:
+  * No shared state. Every manager instance owns only its parameter dict,
+    so instances can be created freely from any thread.
+  * execute()  → opens a connection, performs ONE call, closes it.
+  * session()  → context manager that keeps ONE connection open for a batch
+                 of calls (class includes, TADIR chunks, table batches).
+
+pyrfc expects the key 'saprouter' (not 'router'); the UI maps it in
+App.get_current_conn() before the dict reaches this class.
+"""
+
+from contextlib import contextmanager
+
 import pyrfc
-import threading
+
 
 class SAPConnectionManager:
-    _instance = None
-    _lock = threading.Lock()
+    def __init__(self, conn_params=None):
+        self.params = dict(conn_params or {})
 
-    def __new__(cls, conn_params=None):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(SAPConnectionManager, cls).__new__(cls)
-                cls._instance.conn = None
-                cls._instance.params = conn_params
-            elif conn_params and conn_params != cls._instance.params:
-                # Update params and reset connection if params changed
-                cls._instance.params = conn_params
-                cls._instance.conn = None
-            return cls._instance
-
-    def connect(self, params=None):
-        if params: self.params = params
-        if not self.params:
-            raise ValueError("No SAP connection parameters provided.")
-
-        # Always attempt fresh connection — ping() can also block on dead sessions
-        if self.conn:
-            try:
-                self.conn.close()
-            except:
-                pass
-            self.conn = None
-
+    def _open(self):
+        if not self.params.get("ashost"):
+            raise ValueError("No SAP connection parameters provided (ashost missing).")
         try:
-            self.conn = pyrfc.Connection(**self.params)
-            return self.conn
+            return pyrfc.Connection(**self.params)
         except Exception as e:
             raise ConnectionError(f"RFC Connection Failed: {e}")
 
+    @staticmethod
+    def _close(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+
     def execute(self, func_name, **kwargs):
-        conn = self.connect()
-        return conn.call(func_name, **kwargs)
+        """Open → call → close. Safe to use concurrently from several threads."""
+        conn = self._open()
+        try:
+            return conn.call(func_name, **kwargs)
+        finally:
+            self._close(conn)
+
+    @contextmanager
+    def session(self):
+        """
+        Keep one connection open for several calls:
+
+            with mgr.session() as call:
+                a = call("RPY_PROGRAM_READ", PROGRAM_NAME="ZA")
+                b = call("RPY_PROGRAM_READ", PROGRAM_NAME="ZB")
+        """
+        conn = self._open()
+        try:
+            yield lambda func_name, **kwargs: conn.call(func_name, **kwargs)
+        finally:
+            self._close(conn)
