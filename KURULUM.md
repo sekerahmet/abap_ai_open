@@ -1,0 +1,74 @@
+# ABAP AI IDE — Kurulum (Windows)
+
+Bu belge hazır `main.exe` ile kurulum içindir. Python kurmak gerekmez.
+
+## 1. Dosyaları indir
+
+GitHub → **Releases** → en son sürüm → `main.exe` dosyasını indir.
+Örneğin `C:\ABAP_AI\` gibi bir klasöre koy.
+
+## 2. SAP RFC kütüphanesi (zorunlu)
+
+Uygulama SAP'ye SAP'nin kendi RFC kütüphanesi (NetWeaver RFC SDK) ile bağlanır. Bu kütüphane
+lisans gereği exe'nin içine konmaz; şu 4 dosya `main.exe` ile **aynı klasörde** olmalı:
+
+```
+sapnwrfc.dll
+icudt50.dll
+icuin50.dll
+icuuc50.dll
+```
+
+Bunları ya SAP Support Portal'dan (S-user gerekir, "SAP NetWeaver RFC SDK 7.50", `lib` klasörü)
+ya da SDK'sı kurulu bir arkadaşından alabilirsin. Eksikse uygulama açılır ama Fetch'te
+"RFC Connection Failed" verir.
+
+## 3. İlk açılış
+
+1. `main.exe`'yi çalıştır (SmartScreen uyarısı çıkarsa *Daha fazla bilgi → Yine de çalıştır*).
+2. Üst çubukta **⚙** simgesine tıkla, bağlantı profilini doldur:
+   App Server, System Nr, Client, User, Password, gerekiyorsa SAP Router. **Save & use**.
+3. Tip olarak *Program* seç, nesne adını yaz (ör. `ZFI_CO_003`), **Fetch**.
+   Sağdaki *SAP Objects* ağacı programın kullandığı tabloları, include'ları, class'ları listeler;
+   tek tık satıra gider, çift tık nesneyi açar.
+
+Tüm veriler `%APPDATA%\ABAP_AI\` altında tutulur (profiller, önbellek, loglar).
+Bağlantı **salt okunur**dur; SAP'ye hiçbir şey yazılmaz.
+
+## 4. İsteğe bağlı: GitHub senkronu (Push / Pull)
+
+Workspace'i özel bir GitHub reposuyla senkronlamak için `main.exe`'nin yanına `.env` dosyası koy:
+
+```
+GITHUB_REPO=https://github.com/<kullanici>/<ozel-workspace-repo>
+GITHUB_TOKEN=github_pat_...
+```
+
+Token: GitHub → Settings → Developer settings → Personal access tokens → Fine-grained →
+Repository access: sadece o repo → Permissions: **Contents: Read and write**.
+`.env` yoksa Push/Pull dışında her şey çalışır. Token'ı kimseyle paylaşma.
+
+## 5. İsteğe bağlı: Claude sekmesi (✦ Claude)
+
+Claude Pro/Max aboneliğiyle çalışır, API anahtarı gerekmez.
+
+1. PowerShell aç: `winget install --id Anthropic.ClaudeCode -e`
+2. Yeni bir PowerShell aç, `claude` yaz, aboneliğinle tarayıcıdan giriş yap, `/exit`.
+3. IDE'de **✦ Claude** → sekme açılır. Claude workspace'teki önbellek dosyalarını okuyabilir.
+
+Claude'un SAP'ye de canlı erişmesi (MCP araçları) için Python tarafı gerekir:
+
+1. Python 3.12 kur, kaynak kodu indir (`git clone https://github.com/sekerahmet/abap_ai_open`)
+2. O klasörde `pip install -r requirements.txt`
+3. `main.exe`'yi o klasörün içine (veya `dist\` altına) koy; IDE `mcp_server.py`'yi kendisi bulur.
+   Ya da Claude Desktop kullanıyorsan oradaki MCP tanımını otomatik alır.
+
+## Sorun giderme
+
+| Belirti | Çözüm |
+|---|---|
+| Uygulama hiç açılmıyor | `%APPDATA%\ABAP_AI\crash.log` dosyasına bak |
+| "RFC Connection Failed … sapnwrfc" | 2. adımdaki DLL'ler exe'nin yanında değil |
+| "Name or password is incorrect" | Profildeki kullanıcı/şifre/client yanlış |
+| Push: "token geçersiz" | `.env` içindeki GITHUB_TOKEN süresi dolmuş, yenile |
+| Claude: "CLI not found" | 5. adım; kurulumdan sonra IDE'yi yeniden aç |

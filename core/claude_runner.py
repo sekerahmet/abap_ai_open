@@ -119,10 +119,15 @@ def find_mcp_server(profile: str):
         if os.path.isfile(ms):
             return "abap-ai", _with_profile({"command": sys.executable, "args": [ms]})
 
-    ms = os.path.join(os.path.dirname(sys.executable), "mcp_server.py")
-    py = shutil.which("python")
-    if os.path.isfile(ms) and py:
-        return "abap-ai", _with_profile({"command": py, "args": [ms]})
+    # exe next to / inside a source checkout (dist\main.exe → repo root) or ABAP_AI_MCP_SERVER
+    exe_dir = os.path.dirname(sys.executable)
+    candidates = [os.environ.get("ABAP_AI_MCP_SERVER", ""),
+                  os.path.join(exe_dir, "mcp_server.py"),
+                  os.path.join(os.path.dirname(exe_dir), "mcp_server.py")]
+    py = shutil.which("python") or shutil.which("py")
+    for ms in candidates:
+        if ms and os.path.isfile(ms) and py:
+            return "abap-ai", _with_profile({"command": py, "args": [ms]})
     return None, None
 
 
