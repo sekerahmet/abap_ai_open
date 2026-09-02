@@ -1,6 +1,5 @@
 pyrfc==3.3.1
-customtkinter==5.2.2
+PySide6>=6.7
 python-dotenv>=1.1.0
-Pillow>=10.0.0
 # MCP server only (python mcp_server.py) — not needed for the IDE .exe
 fastmcp>=3.2.3
