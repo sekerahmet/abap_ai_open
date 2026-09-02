@@ -18,6 +18,9 @@ letting Claude (via MCP) analyse that code and propose changes as reviewable dif
   *Open / Show in Windows Explorer / Delete*
 - Proposal watcher: when Claude writes a proposal through the MCP server, a diff tab opens
   automatically
+- **Claude Code inside the IDE**: `✦ Claude` opens a session tab that runs the Claude Code CLI
+  with your own subscription login (no API key). It sees the workspace files, the open code tab,
+  and the SAP MCP tools; code suggestions come back as proposals / diff tabs
 - Resizable three-column layout; window size and panel widths are remembered
 - Single-file `.exe` build with PyInstaller; all user data lives in `%APPDATA%\ABAP_AI`
 
@@ -27,7 +30,8 @@ letting Claude (via MCP) analyse that code and propose changes as reviewable dif
 - [SAP NetWeaver RFC SDK](https://support.sap.com/en/product/connectors/nwrfcsdk.html)
   installed and on `PATH` (needed by `pyrfc`)
 - Git for Windows (for workspace sync)
-- Optional: Claude Desktop / Claude Code for the MCP integration
+- Optional: Claude Desktop (MCP) and/or Claude Code CLI (`winget install Anthropic.ClaudeCode`,
+  then run `claude` once to log in) for the in-IDE Claude tab
 
 ## Setup
 

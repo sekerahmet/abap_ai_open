@@ -30,6 +30,8 @@ from utils import github_sync
 from ui.panels.sidebar import SidebarPanel, CONN_FIELDS
 from ui.panels.editor import EditorPanel
 from ui.panels.explorer_panel import ExplorerPanel
+from ui.panels.claude_panel import ClaudePanel
+from core.claude_runner import ClaudeSession, find_claude
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -39,11 +41,13 @@ _APP_DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
 os.makedirs(_APP_DATA_DIR, exist_ok=True)
 SYSTEMS_FILE  = os.path.join(_APP_DATA_DIR, "systems.json")
 UI_STATE_FILE = os.path.join(_APP_DATA_DIR, "ui_state.json")
+CLAUDE_SESSIONS_FILE = os.path.join(_APP_DATA_DIR, "claude_sessions.json")
 
 _CONN_KEYS   = [k for k, _, _ in CONN_FIELDS]
 _DDIC_TYPES  = ("Table", "Structure")
 _CODE_TYPES  = ("Program", "Global Class", "Function Module")
 _TAB_PREFIXES = ("Program", "Global Class", "Function Module", "Table", "Proposal", "Diff")
+_CONTEXT_INLINE_LIMIT = 20000      # chars of open-tab code sent inline to Claude
 
 # TADIR OBJECT → (sub-fetch category, display icon)
 _TADIR_META = {
@@ -1110,6 +1114,83 @@ class App(ctk.CTk):
 
     def reset_buttons(self):
         self.fetch_btn.configure(state="normal", text="Fetch")
+
+    # ── Claude Code sessions ──────────────────────────────────────────────────
+
+    def _load_claude_sessions(self) -> list:
+        try:
+            with open(CLAUDE_SESSIONS_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def list_claude_sessions(self, profile: str) -> list:
+        """Most recent first: [{"id", "title", "profile", "last"}, …] for one profile."""
+        return [x for x in self._load_claude_sessions() if x.get("profile") == profile]
+
+    def remember_claude_session(self, session, title: str):
+        if not session.session_id:
+            return
+        import time
+        items = [x for x in self._load_claude_sessions() if x.get("id") != session.session_id]
+        items.insert(0, {"id": session.session_id, "title": title, "profile": session.profile,
+                         "last": time.strftime("%Y-%m-%d %H:%M"), "cost": round(session.total_cost, 4)})
+        try:
+            with open(CLAUDE_SESSIONS_FILE, "w", encoding="utf-8") as fh:
+                json.dump(items[:50], fh, indent=2)
+        except OSError:
+            pass
+
+    def open_claude_tab(self, session_id: str = None, title: str = None):
+        """Open a Claude Code session tab (new session, or resume an existing one)."""
+        profile = self.active_profile()
+        if not profile:
+            mbox.showwarning("Claude", "Select or save a connection profile first.")
+            return
+        if not find_claude():
+            mbox.showwarning("Claude Code not found",
+                             "Claude Code CLI is not installed or not on PATH.\n\n"
+                             "Install:  winget install Anthropic.ClaudeCode\n"
+                             "Then run  claude  once to log in with your subscription.")
+            return
+        if not title:
+            n = 1
+            while f"Claude: #{n}" in self.editor.tabs_dict or any(
+                    x.get("title") == f"#{n}" for x in self.list_claude_sessions(profile)):
+                n += 1
+            title = f"#{n}"
+        name = f"Claude: {title}"
+        if name in self.editor.tabs_dict:
+            self.editor.set_active(name)
+            return
+        cwd = workspace.abs_path(profile)
+        session = ClaudeSession(cwd=cwd, profile=profile, session_id=session_id)
+        content = self.editor.add_tab(name)
+        panel = ClaudePanel(content, self, session, title)
+        panel.pack(fill="both", expand=True)
+        self.editor.set_active(name)
+        self.write_log(f"[Claude] {'Resumed' if session_id else 'New'} session {title} "
+                       f"(cwd={cwd}, mcp={'yes' if session.has_mcp else 'no'})")
+
+    def get_active_code_context(self) -> str:
+        """Describe the active code tab for Claude (file path + inline code when small)."""
+        entry = self.tabs_dict.get(self.active_tab_name or "")
+        if not entry or not entry.get("prog"):
+            return ""
+        prog, ftype = entry["prog"], entry.get("ftype") or "Program"
+        profile = entry.get("source_profile") or self.active_profile()
+        code = entry.get("code", "")
+        folder = workspace.PROP_FOLDER if str(self.active_tab_name).startswith("Proposal:") else workspace.SOURCE_FOLDER
+        proj = workspace.find_project(profile, folder, f"{prog}.abap") or prog
+        rel = f"{proj}/{folder}/{prog}.abap"
+        ctx = (f"[IDE context] The user has '{self.active_tab_name}' open ({ftype} {prog}, "
+               f"SAP profile {profile}). Cached file relative to the working directory: {rel}")
+        if code and len(code) <= _CONTEXT_INLINE_LIMIT:
+            ctx += f"\nCurrent content:\n```abap\n{code}\n```"
+        elif code:
+            ctx += f"\nThe file is large ({len(code.splitlines())} lines); read it with the Read tool."
+        return ctx
 
     # ── GitHub sync ───────────────────────────────────────────────────────────
 

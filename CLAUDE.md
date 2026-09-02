@@ -41,6 +41,8 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `ui/panels/sidebar.py` | `SidebarPanel` — connection profiles (dropdown + entries + Save), `CONN_FIELDS` |
 | `ui/panels/editor.py` | `EditorPanel` — fetch bar, horizontally scrollable tab bar, content area, `OBJECT_TYPES` |
 | `ui/panels/explorer_panel.py` | `ExplorerPanel` — SAP Objects tree + Workspace tree (git status, Push/Pull/Refresh, branch label) |
+| `ui/panels/claude_panel.py` | `ClaudePanel` — one Claude Code session per tab (transcript + input, resume menu) |
+| `core/claude_runner.py` | `ClaudeSession` — runs `claude -p --output-format stream-json` with the user's subscription login; MCP config discovery |
 | `core/controller.py` | `AnalysisController` — stateless facade; builds a reader per call from the conn dict it receives |
 | `core/sap/connection.py` | `SAPConnectionManager` — one connection per `execute()`, or `session()` for batches; no shared state |
 | `core/sap/program_reader.py` | `ProgramReader` — programs/includes, function modules, global classes (all includes + methods via TMDIR) |
@@ -101,6 +103,17 @@ CLAS → CLASS, PROG → PROG, FUNC → FUNC); other TADIR types only jump.
 - `_seed_proposals(profile)` marks existing proposals as seen at startup / profile switch
 The loop is wrapped in try/finally so an error never stops polling.
 
+### Claude Code tab (subscription, no API key)
+`✦ Claude` opens `Claude: #n`. Each message = one `claude -p` subprocess (prompt on stdin,
+`--resume <session_id>` after the first turn, `--include-partial-messages` for streaming).
+cwd = `workspace/{profile}`; allowed tools = Read/Glob/Grep/LS + `mcp__<server>`; the MCP
+server config is taken from Claude Desktop's config (any server whose args mention
+`mcp_server.py`), else this checkout's `mcp_server.py`, with `SAP_PROFILE` set to the active
+profile. `get_active_code_context()` prepends the open code tab (inline ≤ 20k chars, else the
+path). Sessions are listed in `%APPDATA%\ABAP_AI\claude_sessions.json`. The Agent SDK is
+deliberately not used: Anthropic does not allow subscription auth through the SDK for
+third-party apps; the CLI in `-p` mode is fine for the user's own tooling.
+
 ### App context wiring
 Panels receive `app_context` (the `App`) and set widget references on it
 (`self.app.sap_ashost`, `self.app.tree`, `self.app.ws_tree`, `self.app.fetch_btn`).
@@ -120,6 +133,7 @@ to `dist/main.exe`. Keys: `GITHUB_TOKEN`, `GITHUB_REPO`, optional `SAP_*` fallba
 | Workspace table fields | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROJECT}\tables\NAME.json` |
 | AI proposals | `%APPDATA%\ABAP_AI\workspace\{profile}\{PROJECT}\proposals\NAME.abap` |
 | Crash log | `%APPDATA%\ABAP_AI\crash.log` |
+| Claude sessions / MCP config | `%APPDATA%\ABAP_AI\claude_sessions.json`, `claude_mcp_<profile>.json` |
 | Workspace git repo | `%APPDATA%\ABAP_AI\workspace\.git` (branch `main`, proposals ignored) |
 
 `systems.json` in the repo root is git-ignored — never commit it.

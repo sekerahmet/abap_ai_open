@@ -31,8 +31,13 @@ class EditorPanel(ctk.CTkFrame):
 
         self.fetch_btn = ctk.CTkButton(self.fetch_bar, text="Fetch", width=100, height=40,
                                        command=self.app.fetch_program_flow)
-        self.fetch_btn.grid(row=0, column=2, padx=10)
+        self.fetch_btn.grid(row=0, column=2, padx=(10, 4))
         self.app.fetch_btn = self.fetch_btn
+
+        self.claude_btn = ctk.CTkButton(self.fetch_bar, text="✦ Claude", width=110, height=40,
+                                        fg_color="#5a3a8a", hover_color="#7a5aaa",
+                                        command=self.app.open_claude_tab)
+        self.claude_btn.grid(row=0, column=3, padx=(4, 10))
 
         # ── Tab bar (scrolls horizontally when many tabs are open) ────────────
         self.headers_bar = ctk.CTkScrollableFrame(self, orientation="horizontal", height=36,
