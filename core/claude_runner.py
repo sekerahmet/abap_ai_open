@@ -110,6 +110,42 @@ def write_mcp_config(profile: str):
     return path, name
 
 
+_auth_cache = None
+
+
+def auth_info() -> dict:
+    """
+    Cached `claude auth status`. Keys of interest: loggedIn, authMethod
+    ("claude.ai" = subscription, "api_key" = pay-per-use), subscriptionType.
+    """
+    global _auth_cache
+    if _auth_cache is not None:
+        return _auth_cache
+    exe = find_claude()
+    info = {}
+    if exe:
+        try:
+            r = subprocess.run([exe, "auth", "status"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=20,
+                               creationflags=_CREATE_NO_WINDOW)
+            info = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
+        except Exception:
+            info = {}
+    _auth_cache = info
+    return info
+
+
+def billing_label() -> str:
+    """Short text for the UI: how usage is paid for."""
+    info = auth_info()
+    if not info:
+        return ""
+    if info.get("authMethod") == "claude.ai":
+        plan = info.get("subscriptionType") or "subscription"
+        return f"{plan} subscription — not billed per request"
+    return "API key — pay per token"
+
+
 # ── Session ───────────────────────────────────────────────────────────────────
 
 class ClaudeSession:

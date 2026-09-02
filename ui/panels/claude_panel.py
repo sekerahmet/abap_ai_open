@@ -9,7 +9,7 @@ rendered on the main thread via app.after(0, …).
 import threading
 import customtkinter as ctk
 
-from core.claude_runner import ClaudeSession, find_claude
+from core.claude_runner import ClaudeSession, find_claude, auth_info, billing_label
 
 
 class ClaudePanel(ctk.CTkFrame):
@@ -77,6 +77,9 @@ class ClaudePanel(ctk.CTkFrame):
                     "MCP server not found — only cached workspace files are available.\n"))
         if not find_claude():
             intro += "Claude Code CLI not installed: winget install Anthropic.ClaudeCode\n"
+        bl = billing_label()
+        if bl:
+            intro += f"Auth: {bl}.\n"
         self._append(intro + "\n", "meta")
         self.inp.focus_set()
 
@@ -87,9 +90,14 @@ class ClaudePanel(ctk.CTkFrame):
                 self.app.open_claude_tab(session_id=x["id"], title=x["title"])
                 return
 
+    def _subscription(self) -> bool:
+        return auth_info().get("authMethod") == "claude.ai"
+
     def _refresh_title(self):
         sid = (self.session.session_id or "new")[:8]
-        self._title_var.set(f"{self.title}   ·   session {sid}   ·   ${self.session.total_cost:.3f}")
+        tail = (f"{auth_info().get('subscriptionType', 'subscription')} plan" if self._subscription()
+                else f"${self.session.total_cost:.3f}")
+        self._title_var.set(f"{self.title}   ·   session {sid}   ·   {tail}")
 
     def _append(self, text: str, tag: str = None):
         self.out.configure(state="normal")
@@ -174,9 +182,13 @@ class ClaudePanel(ctk.CTkFrame):
         cost = res.get("total_cost_usd")
         turns = res.get("num_turns")
         ms = res.get("duration_ms")
+        cost_txt = ""
+        if isinstance(cost, (int, float)):
+            cost_txt = (f"API-equivalent ~${cost:.3f} (not billed)" if self._subscription()
+                        else f"${cost:.3f}")
         meta = "  ".join(x for x in (
             f"turns={turns}" if turns is not None else "",
-            f"${cost:.3f}" if isinstance(cost, (int, float)) else "",
+            cost_txt,
             f"{ms / 1000:.1f}s" if isinstance(ms, (int, float)) else "") if x)
         if meta:
             self._append(f"\n— {meta}\n", "meta")
