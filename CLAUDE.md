@@ -17,16 +17,16 @@ Packaged as a single Windows .exe with PyInstaller.
 ## Architecture (3 layers)
 
 ```
-ui/          ← CustomTkinter GUI  (never touches pyrfc directly)
+ui/          ← PySide6 (Qt) GUI  (never touches pyrfc directly)
 core/        ← SAP readers + controller facade
 utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync, env_loader)
 ```
 
 | Layer | Allowed to | Must NOT |
 |---|---|---|
-| `ui/` | call `app.controller.*`, update widgets | import pyrfc |
-| `core/` | RFC calls, pure logic | import tkinter |
-| `utils/` | regex, text manipulation, filesystem, subprocess git | import tkinter, pyrfc, `core.*` |
+| `ui/` | call `self.controller.*`, update widgets | import pyrfc |
+| `core/` | RFC calls, pure logic | import PySide6 |
+| `utils/` | regex, text manipulation, filesystem, subprocess git | import PySide6, pyrfc, `core.*` |
 
 ---
 
@@ -38,13 +38,18 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 | `main.spec` | PyInstaller spec (`console=False`, `debug=False`; flip `console=True` to see tracebacks) |
 | `mcp_server.py` | FastMCP server — read-only SAP RFC + workspace tools for Claude Desktop |
 | `ui/main_app.py` | `App(ctk.CTk)` — glue: profiles, threads, tabs, SAP-object tree, workspace explorer, proposal watcher, GitHub sync |
-| `ui/theme.py` | colour / font / spacing constants used by every panel |
-| `ui/panels/topbar.py` | `TopBar` — profile chip + ⚙ (opens `ConnectionDialog`) + object type / name / Fetch / ✦ Claude; `CONN_FIELDS`, `OBJECT_TYPES` |
-| `ui/panels/editor.py` | `EditorPanel` — tab bar (glyph per tab type, scrollbar only on overflow) + content area |
-| `ui/widgets/codeview.py` | `CodeView` — tk.Text with line-number gutter, active-line highlight, Ctrl+F find bar |
-| `ui/panels/explorer_panel.py` | `ExplorerPanel` — SAP Objects tree + Workspace tree (git status, Push/Pull/Refresh, branch label) |
-| `ui/panels/claude_panel.py` | `ClaudePanel` — one Claude Code session per tab (transcript + input, resume menu) |
-| `core/claude_runner.py` | `ClaudeSession` — runs `claude -p --output-format stream-json` with the user's subscription login; MCP config discovery |
+| `ui/theme.py` | colours + the application-wide Qt stylesheet (`QSS`) |
+| `ui/bridge.py` | `Bridge.call(fn, …)` = run on the GUI thread from any thread (queued signal); `run_bg` |
+| `ui/main_window.py` | `MainWindow(QMainWindow)` — toolbar, tabs, docks, status bar, all app logic (fetch, discovery, workspace, proposals, git, Claude sessions, Local profile, Open file / Paste code) |
+| `ui/dialogs.py` | `ConnectionDialog`, `PasteCodeDialog`, `CONN_FIELDS` |
+| `ui/highlighter_qt.py` | `AbapHighlighter`, `DiffHighlighter` (QSyntaxHighlighter) |
+| `ui/widgets/code_editor.py` | `CodeView` = `CodeEditor(QPlainTextEdit)` with line numbers, current line, Ctrl+F find bar |
+| `ui/widgets/tables.py` | `fields_table`, `data_table` (QTableWidget) |
+| `ui/widgets/markdown.py` | markdown→HTML, `MessageBubble`, `CodeBlock` (Copy / Open as proposal) |
+| `ui/panels/sap_tree.py` | `SapObjectsPanel` (filter + tree; `TADIR_META`) |
+| `ui/panels/workspace_tree.py` | `WorkspacePanel` (Push/Pull/Refresh, branch, filter, git-coloured tree, context menu) |
+| `ui/panels/claude_side.py` | `ClaudeSidePanel` (account, usage bars, session manager) — left dock |
+| `ui/panels/claude_chat.py` | `ClaudeChatTab` (bubbles, composer with attachments / image paste / model combo) |
 | `core/controller.py` | `AnalysisController` — stateless facade; builds a reader per call from the conn dict it receives |
 | `core/sap/connection.py` | `SAPConnectionManager` — one connection per `execute()`, or `session()` for batches; no shared state |
 | `core/sap/program_reader.py` | `ProgramReader` — programs/includes, function modules, global classes (all includes + methods via TMDIR) |
@@ -60,9 +65,10 @@ utils/       ← Stateless helpers  (parser, highlighter, workspace, github_sync
 ## Key Patterns
 
 ### Threading rule (critical)
-All RFC / git / disk-heavy work runs in `daemon=True` threads. GUI updates **must** go through
-`self.after(0, fn, args)`. Never touch widgets (or `messagebox`) from a background thread.
-Read `StringVar`s (e.g. the active profile) on the main thread and pass the value into the worker.
+All RFC / git / disk-heavy work runs in daemon threads (`ui.bridge.run_bg`). GUI updates **must**
+go through `self.ui.call(fn, *args)` (a queued Qt signal executed on the GUI thread). Never touch
+widgets or QMessageBox from a background thread. Read the active profile on the GUI thread and
+pass it into the worker.
 
 ### Connection handling
 `SAPConnectionManager` is **not** a singleton. `execute()` opens → calls → closes; `session()`
@@ -106,11 +112,14 @@ CLAS → CLASS, PROG → PROG, FUNC → FUNC); other TADIR types only jump.
 The loop is wrapped in try/finally so an error never stops polling.
 
 ### Claude Code tab (subscription, no API key)
-Transcript renders light markdown (headers, bold, inline code, bullets, fenced code with
-Copy / "Open as proposal" → `App.proposal_from_code`). Text streams raw and is re-rendered
-when the text block completes. Usage bars come from `rate_limit_event` and persist in
-`claude_usage.json`.
-`✦ Claude` opens `Claude: #n`. Each message = one `claude -p` subprocess (prompt on stdin,
+`ClaudeChatTab`: message bubbles (markdown → HTML; code blocks are `CodeBlock` widgets with
+Copy / "Open as proposal" → `MainWindow.proposal_from_code`), composer with `+` file attach,
+Ctrl+V image paste and drag-drop (files are copied to `workspace/<profile>/_attachments/` and
+their relative paths are listed in the prompt for the Read tool), model combo (`--model`),
+context checkbox, Stop. Text streams raw and is re-rendered when the text block completes.
+Usage windows from `rate_limit_event` persist in `claude_usage.json` and feed the left dock.
+Session titles default to the first prompt; sessions are listed per profile in the left dock.
+`✦ Claude` / "+ New session" opens `Claude: #n`. Each message = one `claude -p` subprocess (prompt on stdin,
 `--resume <session_id>` after the first turn, `--include-partial-messages` for streaming).
 cwd = `workspace/{profile}`; allowed tools = Read/Glob/Grep/LS + `mcp__<server>`; the MCP
 server config is taken from Claude Desktop's config (any server whose args mention
@@ -120,23 +129,25 @@ path). Sessions are listed in `%APPDATA%\ABAP_AI\claude_sessions.json`. The Agen
 deliberately not used: Anthropic does not allow subscription auth through the SDK for
 third-party apps; the CLI in `-p` mode is fine for the user's own tooling.
 
-### Layout
-Row 0 `TopBar`, row 1 `tk.PanedWindow` (Editor | Explorer, draggable sash), row 2 status bar.
-Connection profiles are edited in `ConnectionDialog`; `App.get_current_conn()` reads the active
-profile from `systems_data` (there are no entry widgets on the main window any more).
-`App.save_profile(name, data)` / `delete_profile(name)` are the only write paths.
+### Layout (Qt)
+`QMainWindow`: toolbar (profile combo · ⚙ · type · name · Fetch · Open file… · Paste code · ✦ Claude),
+central `QTabWidget` (`self.tabs[name] = {widget, kind, view, code, prog, ftype, source_profile}`),
+right docks SAP OBJECTS / WORKSPACE (tabified), left dock CLAUDE, status bar. Dock layout and
+geometry are saved with `saveState/saveGeometry` into `ui_state.json`. Shortcuts: Ctrl+B Claude
+dock, Ctrl+Shift+E workspace, Ctrl+Shift+O objects, Ctrl+W close tab, Ctrl+F find.
+Profiles are edited in `ConnectionDialog`; `get_current_conn()` reads `systems_data`.
+`save_profile(name, data)` / `delete_profile(name)` are the only write paths.
 
-### Code tabs
-`open_code_tab` builds a `CodeView`; `tabs_dict[name]` holds `view` (CodeView) and `textbox`
-(its tk.Text). `jump_to_line` uses `view.goto`. Highlighter runs on the tk.Text.
+### Local profile
+`LOCAL_PROFILE` ("Local (no SAP)") is always the last entry of the profile combo. With it active
+Fetch is disabled; "Open file…" and "Paste code" import sources into
+`workspace/Local (no SAP)/<NAME>/programs/` (names are forced to Z/Y prefix) and open them like
+any cached object, so the object tree (offline) and Claude tabs work without SAP.
 
-### Filters
-Explorer filter boxes call `App.filter_sap_tree(text)` / `filter_workspace_tree(text)`, which
-re-render from the last data (`_tree_last`, `_ws_last`) without RFC or git.
-
-### App context wiring
-Panels receive `app_context` (the `App`) and set widget references on it
-(`self.app.tree`, `self.app.ws_tree`, `self.app.fetch_btn`).
+### Panels talk via signals
+Panels never touch the window; they emit (`jump`, `open_object`, `open_file`, `reveal`, `delete`,
+`push`, `pull`, `refresh`, `new_session`, `open_session`, `forget_session`) and `MainWindow`
+connects them. Filters re-render from the panel's last data without RFC or git.
 
 ### .env
 All modules use `utils.env_loader.load_robust_env()`. `.env` is **not** bundled — copy it next

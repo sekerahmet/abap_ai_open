@@ -1,7 +1,6 @@
 """
-Entry point.  With console=False in main.spec a startup crash would otherwise be
-invisible, so any uncaught exception is written to %APPDATA%\\ABAP_AI\\crash.log
-and shown in a message box.
+Entry point (PySide6).  Uncaught exceptions are written to
+%APPDATA%\\ABAP_AI\\crash.log and shown in a message box.
 """
 import os
 import sys
@@ -15,24 +14,45 @@ def _crash_log_path() -> str:
     return os.path.join(base, "crash.log")
 
 
+def _report(tb: str):
+    path = _crash_log_path()
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n===== {datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====\n{tb}")
+    except OSError:
+        pass
+    try:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "ABAP AI IDE — error",
+                             f"An unexpected error occurred.\nDetails were written to:\n{path}\n\n{tb[-1500:]}")
+    except Exception:
+        print(tb, file=sys.stderr)
+
+
 def main():
     try:
-        from ui.main_app import App
-        App().mainloop()
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
+        from ui import theme
+        from ui.main_window import MainWindow
+
+        app = QApplication(sys.argv)
+        app.setApplicationName("ABAP AI IDE")
+        app.setStyle("Fusion")
+        app.setFont(QFont(theme.UI_FONT, 9))
+        app.setStyleSheet(theme.QSS)
+
+        def _excepthook(etype, value, tb):
+            _report("".join(traceback.format_exception(etype, value, tb)))
+        sys.excepthook = _excepthook
+
+        win = MainWindow()
+        win.show()
+        sys.exit(app.exec())
+    except SystemExit:
+        raise
     except Exception:
-        tb = traceback.format_exc()
-        path = _crash_log_path()
-        try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(f"\n===== {datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====\n{tb}")
-        except OSError:
-            pass
-        try:
-            import tkinter.messagebox as mbox
-            mbox.showerror("ABAP AI IDE — crashed",
-                           f"An unexpected error occurred.\nDetails were written to:\n{path}\n\n{tb[-1500:]}")
-        except Exception:
-            print(tb, file=sys.stderr)
+        _report(traceback.format_exc())
         sys.exit(1)
 
 

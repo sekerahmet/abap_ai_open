@@ -1,6 +1,6 @@
 # ABAP AI IDE
 
-A lightweight Windows desktop IDE for **reading** ABAP code from SAP systems, exploring the
+A Windows desktop IDE (Python + PySide6) for **reading** ABAP code from SAP systems, exploring the
 objects a program depends on, caching custom (Z*/Y*) objects in a git-backed workspace, and
 letting Claude (via MCP) analyse that code and propose changes as reviewable diffs.
 
@@ -21,7 +21,9 @@ letting Claude (via MCP) analyse that code and propose changes as reviewable dif
 - **Claude Code inside the IDE**: `✦ Claude` opens a session tab that runs the Claude Code CLI
   with your own subscription login (no API key). It sees the workspace files, the open code tab,
   and the SAP MCP tools; code suggestions come back as proposals / diff tabs
-- Resizable three-column layout; window size and panel widths are remembered
+- **Local mode**: pick "Local (no SAP)" and use *Open file…* / *Paste code* to work on ABAP
+  sources without any SAP system
+- Dockable panels (Claude · SAP Objects · Workspace), tabs, dark theme; layout is remembered
 - Single-file `.exe` build with PyInstaller; all user data lives in `%APPDATA%\ABAP_AI`
 
 ## Requirements
@@ -84,7 +86,7 @@ pyinstaller main.spec      # → dist/main.exe ; copy .env next to it
 ## Project layout
 
 ```
-ui/       CustomTkinter GUI (main_app.py + panels/)
+ui/       PySide6 GUI (main_window.py, panels/, widgets/, dialogs.py)
 core/     SAP readers and the controller facade (pyrfc lives only here)
 utils/    parser, highlighter, workspace, github_sync, env_loader
 ```

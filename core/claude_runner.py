@@ -202,11 +202,13 @@ def billing_label() -> str:
 # ── Session ───────────────────────────────────────────────────────────────────
 
 class ClaudeSession:
-    def __init__(self, cwd: str, profile: str, session_id: str = None, max_turns: int = 40):
+    def __init__(self, cwd: str, profile: str, session_id: str = None, max_turns: int = 40,
+                 model: str = ""):
         self.cwd = cwd
         self.profile = profile
         self.session_id = session_id
         self.max_turns = max_turns
+        self.model = model                      # "" → CLI default; else passed as --model
         self.total_cost = 0.0
         self.usage, self.usage_saved_at = load_usage()   # {window: (utilization, resets_at)}
         self.mcp_path, self.mcp_name = write_mcp_config(profile)
@@ -227,6 +229,8 @@ class ClaudeSession:
                "--append-system-prompt", SYSTEM_PROMPT.format(profile=self.profile)]
         if self.mcp_path:
             cmd += ["--mcp-config", self.mcp_path]
+        if self.model:
+            cmd += ["--model", self.model]
         if self.session_id:
             cmd += ["--resume", self.session_id]
         return cmd
