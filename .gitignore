@@ -27,3 +27,4 @@ scratch/
 
 # Local connection profiles (contain passwords)
 systems.json
+dist_release/
